@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      2.4.7
+// @version      2.5.0
 // @description  预埋、豁免、直播信息违规、超时提示功能，集成推送功能和操作日志提取
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
