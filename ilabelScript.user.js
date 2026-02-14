@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
-// @namespace    https://github.com/ehekatle/ilableScript
+// @namespace    https://github.com/ehekatle/ilabel
 // @version      2.4.7
 // @description  预埋、豁免、直播信息违规、超时提示功能，集成推送功能和操作日志提取
 // @author       ehekatle
-// @homepage     https://github.com/ehekatle/ilableScript
-// @source       https://raw.githubusercontent.com/ehekatle/ilableScript/main/ilableScript.user.js
-// @supportURL   https://github.com/ehekatle/ilableScript/issues
-// @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilableScript/main/ilableScript.meta.js
-// @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilableScript/main/ilableScript.user.js
+// @homepage     https://github.com/ehekatle/ilabel
+// @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.user.js
+// @supportURL   https://github.com/ehekatle/ilabel/issues
+// @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.meta.js
+// @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.user.js
 // @match        https://ilabel.weixin.qq.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=weixin.qq.com
 // @grant        GM_xmlhttpRequest
@@ -25,8 +25,8 @@
 
     // 全局变量
     const SWITCH_KEY = 'ilabel_reminder_enabled';
-    const REMOTE_SCRIPT_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilableScript/main/ilableScript.js';
-    const ALARM_AUDIO_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilableScript/main/music.mp3';
+    const REMOTE_SCRIPT_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.js';
+    const ALARM_AUDIO_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
 
     // 本地版本号
     const LOCAL_VERSION = GM_info.script.version;
