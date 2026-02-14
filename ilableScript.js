@@ -41,7 +41,7 @@ const auditorWhiteList = [
 const auditorBlackList = [""];
 
 // 推送地址
-const pushUrl = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=23f0bbf8-3665-4f4d-b66a-16ac364b6b8f";
+const pushUrl = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=90014c35-804f-489e-b203-bf59f46f69fb";
 
 // 手机号映射（从白名单自动生成）
 const auditorMobileMap = (function() {
@@ -69,16 +69,14 @@ function checkInfo(getInfoData, config, callback) {
     const auditorName = getInfoData.auditor || '';
     
     // 检查是否在黑名单中
-    const isBlacklisted = config.auditorBlackList.some(item => {
-        if (typeof item === 'string') return item === auditorName;
-        if (item && item.name) return item.name === auditorName;
-        return false;
-    });
-    
-    if (auditorName && isBlacklisted) {
+    const isInWhitelist = config.auditorWhiteList.some(item => 
+        item.name === auditorName
+    );
+
+    if (auditorName && !isInWhitelist) {
         callback({
             type: 'blacklist',
-            message: '审核人员在黑名单中'
+            message: '审核人员不在白名单中'
         });
         return;
     }
@@ -228,16 +226,3 @@ function checkPenalty(data, config) {
     
     return { found: false };
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
