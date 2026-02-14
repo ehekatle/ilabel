@@ -915,7 +915,7 @@
                 console.log(`操作人：${operator}`);
 
                 // 发送企业微信推送
-                // sendAuditResultToWeChat(pendingAuditData);
+                sendAuditResultToWeChat(pendingAuditData);
             });
 
         } catch (error) {
