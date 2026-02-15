@@ -28,7 +28,8 @@ const auditorWhiteList = [
     { name: "王成林", mobile: "15202372642" },
     { name: "涂素榕", mobile: "16602309860" },
     { name: "田一材", mobile: "18883670307" },
-    { name: "敖江凤", mobile: "18315203453" }
+    { name: "敖江凤", mobile: "18315203453" },
+    { name: "林志洋", mobile: "13640598040" }
 ];
 
 // 审核黑名单
