@@ -5,6 +5,11 @@
     'use strict';
 
     const gm = iLabel.gm;
+    if (!gm) {
+        console.error('pushTool.js: GM API 不可用');
+        return;
+    }
+
     let reminderInterval = null;
     let lastReminderTime = 0;
 

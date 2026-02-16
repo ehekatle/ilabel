@@ -5,6 +5,11 @@
     'use strict';
 
     const gm = iLabel.gm;
+    if (!gm) {
+        console.error('config.js: GM API 不可用');
+        return;
+    }
+
     let configPanel = null;
 
     /**

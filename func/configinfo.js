@@ -4,8 +4,13 @@
 (function (iLabel) {
     'use strict';
 
-    // 获取GM API
+    // 获取GM API - 从传入的iLabel对象获取
     const gm = iLabel.gm;
+
+    if (!gm) {
+        console.error('configinfo.js: GM API 不可用');
+        return;
+    }
 
     // 默认配置
     const DEFAULT_CONFIG = {
@@ -81,17 +86,22 @@
          * 从本地存储加载配置
          */
         load() {
-            const saved = gm.getValue('ilabel_config', null);
-            if (saved) {
-                try {
-                    this.config = JSON.parse(saved);
-                } catch (e) {
-                    console.error('解析保存的配置失败，使用默认配置', e);
+            try {
+                const saved = gm.getValue('ilabel_config', null);
+                if (saved) {
+                    try {
+                        this.config = JSON.parse(saved);
+                    } catch (e) {
+                        console.error('解析保存的配置失败，使用默认配置', e);
+                        this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+                    }
+                } else {
                     this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+                    this.save();
                 }
-            } else {
+            } catch (e) {
+                console.error('加载配置失败:', e);
                 this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
-                this.save();
             }
 
             if (iLabel.currentData) {
@@ -105,15 +115,19 @@
          * 保存配置到本地存储
          */
         save() {
-            gm.setValue('ilabel_config', JSON.stringify(this.config));
+            try {
+                gm.setValue('ilabel_config', JSON.stringify(this.config));
 
-            if (iLabel.currentData) {
-                iLabel.currentData.config = this.config;
+                if (iLabel.currentData) {
+                    iLabel.currentData.config = this.config;
+                }
+
+                window.dispatchEvent(new CustomEvent('ilabel:configChanged', {
+                    detail: this.config
+                }));
+            } catch (e) {
+                console.error('保存配置失败:', e);
             }
-
-            window.dispatchEvent(new CustomEvent('ilabel:configChanged', {
-                detail: this.config
-            }));
         }
 
         /**
@@ -159,6 +173,7 @@
             gm.xmlhttpRequest({
                 method: 'GET',
                 url: remoteUrl + '?t=' + Date.now(),
+                timeout: 10000,
                 onload: (response) => {
                     if (response.status === 200) {
                         try {
