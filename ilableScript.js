@@ -27,7 +27,8 @@ const auditorWhiteList = [
     { name: "涂素榕", mobile: "16602309860" },
     { name: "田一材", mobile: "18883670307" },
     { name: "敖江凤", mobile: "18315203453" },
-    { name: "林志洋", mobile: "13640598040" }
+    { name: "林志洋", mobile: "13640598040" },
+    { name: "古力先", mobile: "18999164407" }
 ];
 
 // 审核黑名单
@@ -37,7 +38,7 @@ const auditorBlackList = [""];
 const pushUrl = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=90014c35-804f-489e-b203-bf59f46f69fb";
 
 // 手机号映射（从白名单自动生成）
-const auditorMobileMap = (function() {
+const auditorMobileMap = (function () {
     const map = {};
     auditorWhiteList.forEach(auditor => {
         map[auditor.name] = auditor.mobile;
@@ -60,9 +61,9 @@ const popupColors = {
 function checkInfo(getInfoData, config, callback) {
     // 1. 审核人员检查
     const auditorName = getInfoData.auditor || '';
-    
+
     // 检查是否在黑名单中
-    const isInWhitelist = config.auditorWhiteList.some(item => 
+    const isInWhitelist = config.auditorWhiteList.some(item =>
         item.name === auditorName
     );
 
@@ -122,15 +123,15 @@ function checkInfo(getInfoData, config, callback) {
 // 检查是否为预埋单 - 修改：只检查送审时间和当前网络时间是否不在同一天
 function isPrefilledOrder(data) {
     if (!data.audit_time) return false;
-    
+
     const auditDate = new Date(parseInt(data.audit_time) * 1000);
     const now = new Date();
-    
+
     // 检查送审时间和当前网络时间是否不在同一天
-    const isAuditNotToday = auditDate.getDate() !== now.getDate() || 
-                           auditDate.getMonth() !== now.getMonth() || 
-                           auditDate.getFullYear() !== now.getFullYear();
-    
+    const isAuditNotToday = auditDate.getDate() !== now.getDate() ||
+        auditDate.getMonth() !== now.getMonth() ||
+        auditDate.getFullYear() !== now.getFullYear();
+
     return isAuditNotToday;
 }
 
@@ -146,7 +147,7 @@ function isExempted(data, config) {
             }
         }
     }
-    
+
     // 检查主播认证是否包含白名单关键词
     if (data.authStatus && config.enterpriseMediaWhiteList) {
         for (let i = 0; i < config.enterpriseMediaWhiteList.length; i++) {
@@ -157,7 +158,7 @@ function isExempted(data, config) {
             }
         }
     }
-    
+
     return false;
 }
 
@@ -165,11 +166,11 @@ function isExempted(data, config) {
 function checkAuditRemark(data) {
     // 获取送审备注，如果没有则为空字符串
     const auditRemark = data.auditRemark || '';
-    
+
     if (!auditRemark) {
         return { found: false };
     }
-    
+
     // 检查是否包含"复核"
     if (auditRemark.includes('复核')) {
         return {
@@ -178,7 +179,7 @@ function checkAuditRemark(data) {
             message: '该直播为复核单'
         };
     }
-    
+
     // 检查是否包含"辛苦注意审核"
     if (auditRemark.includes('辛苦注意审核')) {
         return {
@@ -187,7 +188,7 @@ function checkAuditRemark(data) {
             message: '该直播为点杀单'
         };
     }
-    
+
     return { found: false };
 }
 
@@ -196,14 +197,14 @@ function checkPenalty(data, config) {
     if (!config.penaltyKeywords) {
         return { found: false };
     }
-    
+
     // 检查顺序：直播间描述 -> 主播昵称 -> 开播位置
     const checkOrder = [
         { field: 'description', label: '直播间描述' },
         { field: 'nickname', label: '主播昵称' },
         { field: 'poiName', label: '开播位置' }
     ];
-    
+
     for (const check of checkOrder) {
         const fieldValue = data[check.field] || '';
         for (const keyword of config.penaltyKeywords) {
@@ -216,6 +217,6 @@ function checkPenalty(data, config) {
             }
         }
     }
-    
+
     return { found: false };
 }
