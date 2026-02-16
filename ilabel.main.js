@@ -1,5 +1,5 @@
 // ==MainEntry==
-// iLabel辅助工具主入口 - 版本 3.0.3
+// iLabel辅助工具主入口 - 版本 3.0.4
 // ==/MainEntry==
 
 (function () {
@@ -8,33 +8,46 @@
     console.log('iLabel辅助工具主模块启动');
 
     // 注意：在new Function中无法直接访问GM_*函数
-    // 所以这里不检查GM_*函数，而是直接传递
-
-    // 将GM函数传递给远程模块
-    const gmAPI = {
-        getValue: typeof GM_getValue !== 'undefined' ? GM_getValue : null,
-        setValue: typeof GM_setValue !== 'undefined' ? GM_setValue : null,
-        xmlhttpRequest: typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null,
-        addStyle: typeof GM_addStyle !== 'undefined' ? GM_addStyle : null
+    // 所以我们需要通过闭包来捕获这些函数
+    // 这里尝试从上层作用域获取GM函数
+    let gmFunctions = {
+        getValue: null,
+        setValue: null,
+        xmlhttpRequest: null,
+        addStyle: null
     };
 
-    // 检查GM API是否可用
-    if (!gmAPI.getValue || !gmAPI.setValue || !gmAPI.xmlhttpRequest || !gmAPI.addStyle) {
-        console.error('GM_* 函数不可用，请检查油猴脚本权限设置');
-        console.error('可用的GM函数:', {
-            getValue: !!gmAPI.getValue,
-            setValue: !!gmAPI.setValue,
-            xmlhttpRequest: !!gmAPI.xmlhttpRequest,
-            addStyle: !!gmAPI.addStyle
+    try {
+        // 尝试从上层作用域获取GM函数
+        // 在油猴脚本中，这些函数应该在全局作用域可用
+        gmFunctions = {
+            getValue: typeof GM_getValue !== 'undefined' ? GM_getValue : (typeof window.GM_getValue !== 'undefined' ? window.GM_getValue : null),
+            setValue: typeof GM_setValue !== 'undefined' ? GM_setValue : (typeof window.GM_setValue !== 'undefined' ? window.GM_setValue : null),
+            xmlhttpRequest: typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : (typeof window.GM_xmlhttpRequest !== 'undefined' ? window.GM_xmlhttpRequest : null),
+            addStyle: typeof GM_addStyle !== 'undefined' ? GM_addStyle : (typeof window.GM_addStyle !== 'undefined' ? window.GM_addStyle : null)
+        };
+    } catch (e) {
+        console.error('获取GM函数时出错:', e);
+    }
+
+    // 检查GM API是否可用，但即使不可用也继续执行（有些模块可能不需要）
+    const gmAvailable = !!(gmFunctions.getValue && gmFunctions.setValue && gmFunctions.xmlhttpRequest && gmFunctions.addStyle);
+
+    if (!gmAvailable) {
+        console.warn('部分GM_* 函数不可用，某些功能可能受限');
+        console.warn('可用的GM函数:', {
+            getValue: !!gmFunctions.getValue,
+            setValue: !!gmFunctions.setValue,
+            xmlhttpRequest: !!gmFunctions.xmlhttpRequest,
+            addStyle: !!gmFunctions.addStyle
         });
-        return;
     }
 
     // 存储模块导出和GM API
     window.iLabel = window.iLabel || {};
-    window.iLabel.gm = gmAPI;  // 提供GM API给远程模块
+    window.iLabel.gm = gmFunctions;  // 提供GM API给远程模块
 
-    console.log('GM API已传递给远程模块');
+    console.log('GM API已传递给远程模块', gmAvailable ? '(完整)' : '(部分)');
 
     // 模块加载顺序
     const MODULES = [
@@ -53,114 +66,139 @@
     // 加载样式（在主模块中执行，确保GM_addStyle可用）
     function loadStyles() {
         try {
-            const styles = `
-                .ilabel-draggable {
-                    cursor: move;
-                    user-select: none;
-                    position: fixed !important;
-                    z-index: 999999 !important;
-                }
-                
-                .ilabel-prompt-container {
-                    display: flex;
-                    gap: 8px;
-                    padding: 10px;
-                    background: transparent;
-                    border-radius: 8px;
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                    transition: box-shadow 0.2s;
-                }
-                
-                .ilabel-prompt-container:hover {
-                    box-shadow: 0 6px 16px rgba(0,0,0,0.2);
-                }
-                
-                .ilabel-prompt-item {
-                    padding: 6px 12px;
-                    border-radius: 20px;
-                    font-size: 14px;
-                    font-weight: bold;
-                    color: white;
-                    text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                    white-space: nowrap;
-                }
-                
-                .ilabel-prompt-container.vertical {
-                    flex-direction: column;
-                }
-                
-                .ilabel-prompt-container.horizontal {
-                    flex-direction: row;
-                }
-                
-                .ilabel-alarm-button {
-                    position: fixed;
-                    bottom: 20px;
-                    left: 20px;
-                    width: 40px;
-                    height: 40px;
-                    border-radius: 50%;
-                    background: white;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    cursor: pointer;
-                    z-index: 999998;
-                    transition: all 0.3s;
-                    border: 2px solid #ccc;
-                }
-                
-                .ilabel-alarm-button.state0 {
-                    background: white;
-                    border-color: #ccc;
-                }
-                
-                .ilabel-alarm-button.state0 svg {
-                    color: #666;
-                }
-                
-                .ilabel-alarm-button.state1 {
-                    background: #4caf50;
-                    border-color: #4caf50;
-                }
-                
-                .ilabel-alarm-button.state1 svg {
-                    color: white;
-                }
-                
-                .ilabel-alarm-button.state2 {
-                    background: #f44336;
-                    border-color: #f44336;
-                }
-                
-                .ilabel-alarm-button.state2 svg {
-                    color: white;
-                }
-                
-                .ilabel-alarm-button svg {
-                    width: 24px;
-                    height: 24px;
-                }
-                
-                .ilabel-config-panel {
-                    position: fixed;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    background: white;
-                    border-radius: 8px;
-                    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-                    padding: 20px;
-                    z-index: 1000000;
-                    min-width: 300px;
-                    max-width: 400px;
-                }
-            `;
+            if (gmFunctions.addStyle) {
+                const styles = `
+                    .ilabel-draggable {
+                        cursor: move;
+                        user-select: none;
+                        position: fixed !important;
+                        z-index: 999999 !important;
+                    }
+                    
+                    .ilabel-prompt-container {
+                        display: flex;
+                        gap: 8px;
+                        padding: 10px;
+                        background: transparent;
+                        border-radius: 8px;
+                        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                        transition: box-shadow 0.2s;
+                    }
+                    
+                    .ilabel-prompt-container:hover {
+                        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+                    }
+                    
+                    .ilabel-prompt-item {
+                        padding: 6px 12px;
+                        border-radius: 20px;
+                        font-size: 14px;
+                        font-weight: bold;
+                        color: white;
+                        text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                        white-space: nowrap;
+                    }
+                    
+                    .ilabel-prompt-container.vertical {
+                        flex-direction: column;
+                    }
+                    
+                    .ilabel-prompt-container.horizontal {
+                        flex-direction: row;
+                    }
+                    
+                    .ilabel-alarm-button {
+                        position: fixed;
+                        bottom: 20px;
+                        left: 20px;
+                        width: 40px;
+                        height: 40px;
+                        border-radius: 50%;
+                        background: white;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        cursor: pointer;
+                        z-index: 999998;
+                        transition: all 0.3s;
+                        border: 2px solid #ccc;
+                    }
+                    
+                    .ilabel-alarm-button.state0 {
+                        background: white;
+                        border-color: #ccc;
+                    }
+                    
+                    .ilabel-alarm-button.state0 svg {
+                        color: #666;
+                    }
+                    
+                    .ilabel-alarm-button.state1 {
+                        background: #4caf50;
+                        border-color: #4caf50;
+                    }
+                    
+                    .ilabel-alarm-button.state1 svg {
+                        color: white;
+                    }
+                    
+                    .ilabel-alarm-button.state2 {
+                        background: #f44336;
+                        border-color: #f44336;
+                    }
+                    
+                    .ilabel-alarm-button.state2 svg {
+                        color: white;
+                    }
+                    
+                    .ilabel-alarm-button svg {
+                        width: 24px;
+                        height: 24px;
+                    }
+                    
+                    .ilabel-config-panel {
+                        position: fixed;
+                        top: 50%;
+                        left: 50%;
+                        transform: translate(-50%, -50%);
+                        background: white;
+                        border-radius: 8px;
+                        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+                        padding: 20px;
+                        z-index: 1000000;
+                        min-width: 300px;
+                        max-width: 400px;
+                    }
+                `;
 
-            GM_addStyle(styles);
-            console.log('样式加载成功');
+                gmFunctions.addStyle(styles);
+                console.log('样式加载成功');
+            } else {
+                console.warn('GM_addStyle不可用，无法添加样式');
+                // 尝试使用普通的style标签
+                const style = document.createElement('style');
+                style.textContent = `
+                    .ilabel-draggable { cursor: move; user-select: none; position: fixed !important; z-index: 999999 !important; }
+                    .ilabel-prompt-container { display: flex; gap: 8px; padding: 10px; background: transparent; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: box-shadow 0.2s; }
+                    .ilabel-prompt-container:hover { box-shadow: 0 6px 16px rgba(0,0,0,0.2); }
+                    .ilabel-prompt-item { padding: 6px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.2); box-shadow: 0 2px 4px rgba(0,0,0,0.1); white-space: nowrap; }
+                    .ilabel-prompt-container.vertical { flex-direction: column; }
+                    .ilabel-prompt-container.horizontal { flex-direction: row; }
+                    .ilabel-alarm-button { position: fixed; bottom: 20px; left: 20px; width: 40px; height: 40px; border-radius: 50%; background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999998; transition: all 0.3s; border: 2px solid #ccc; }
+                    .ilabel-alarm-button.state0 { background: white; border-color: #ccc; }
+                    .ilabel-alarm-button.state0 svg { color: #666; }
+                    .ilabel-alarm-button.state1 { background: #4caf50; border-color: #4caf50; }
+                    .ilabel-alarm-button.state1 svg { color: white; }
+                    .ilabel-alarm-button.state2 { background: #f44336; border-color: #f44336; }
+                    .ilabel-alarm-button.state2 svg { color: white; }
+                    .ilabel-alarm-button svg { width: 24px; height: 24px; }
+                    .ilabel-config-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); padding: 20px; z-index: 1000000; min-width: 300px; max-width: 400px; }
+                `;
+                document.head.appendChild(style);
+                console.log('使用普通style标签添加样式');
+            }
         } catch (e) {
             console.error('样式加载失败:', e);
         }
@@ -184,10 +222,38 @@
 
         console.log(`正在加载模块: ${module.name} (${index + 1}/${MODULES.length})`);
 
-        GM_xmlhttpRequest({
+        // 使用GM_xmlhttpRequest或普通的fetch
+        const requestFn = gmFunctions.xmlhttpRequest || function (options) {
+            // 降级使用fetch
+            fetch(options.url, {
+                method: options.method || 'GET',
+                headers: options.headers || {}
+            })
+                .then(response => {
+                    if (response.ok) {
+                        return response.text();
+                    }
+                    throw new Error('HTTP ' + response.status);
+                })
+                .then(text => {
+                    if (options.onload) {
+                        options.onload({ status: 200, responseText: text });
+                    }
+                })
+                .catch(error => {
+                    if (options.onerror) {
+                        options.onerror(error);
+                    }
+                });
+        };
+
+        requestFn({
             method: 'GET',
             url: moduleUrl + '?t=' + Date.now(),
             timeout: 10000,
+            headers: {
+                'Cache-Control': 'no-cache'
+            },
             onload: function (response) {
                 if (response.status === 200) {
                     try {
