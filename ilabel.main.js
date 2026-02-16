@@ -1,5 +1,5 @@
 // ==MainEntry==
-// iLabel辅助工具主入口 - 版本 3.0.0
+// iLabel辅助工具主入口 - 版本 3.0.1
 // ==/MainEntry==
 
 (function () {
@@ -7,9 +7,21 @@
 
     console.log('iLabel辅助工具主模块启动');
 
+    // 将GM函数传递给远程模块
+    const gmAPI = {
+        getValue: GM_getValue,
+        setValue: GM_setValue,
+        xmlhttpRequest: GM_xmlhttpRequest,
+        addStyle: GM_addStyle
+    };
+
+    // 存储模块导出和GM API
+    window.iLabel = window.iLabel || {};
+    window.iLabel.gm = gmAPI;  // 提供GM API给远程模块
+
     // 模块加载顺序
     const MODULES = [
-        { name: 'liveinfo', url: 'func/liveinfo.js' },       // 数据结构定义（优先加载）
+        { name: 'liveinfo', url: 'func/liveinfo.js' },       // 数据结构定义
         { name: 'configinfo', url: 'func/configinfo.js' },   // 配置文件
         { name: 'config', url: 'func/config.js' },           // 配置工具
         { name: 'ringTool', url: 'func/ringTool.js' },       // 音乐播放器
@@ -21,54 +33,7 @@
         { name: 'Prompt', url: 'func/Prompt.js' }            // 浮动提示
     ];
 
-    // 存储模块导出
-    window.iLabel = window.iLabel || {};
-
-    // 加载所有模块
-    function loadModules(index) {
-        if (index >= MODULES.length) {
-            console.log('所有模块加载完成，初始化完成');
-
-            // 触发所有模块加载完成事件
-            window.dispatchEvent(new CustomEvent('ilabel:allModulesLoaded'));
-            return;
-        }
-
-        const module = MODULES[index];
-        const moduleUrl = `https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/${module.url}`;
-
-        console.log(`正在加载模块: ${module.name}`);
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: moduleUrl + '?t=' + Date.now(),
-            onload: function (response) {
-                if (response.status === 200) {
-                    try {
-                        // 执行模块代码
-                        new Function('iLabel', response.responseText)(window.iLabel);
-                        console.log(`模块加载成功: ${module.name}`);
-
-                        // 加载下一个模块
-                        setTimeout(() => loadModules(index + 1), 10);
-                    } catch (e) {
-                        console.error(`模块执行失败 ${module.name}:`, e);
-                        // 继续加载下一个
-                        loadModules(index + 1);
-                    }
-                } else {
-                    console.error(`模块加载失败 ${module.name}，状态码:`, response.status);
-                    loadModules(index + 1);
-                }
-            },
-            onerror: function (error) {
-                console.error(`模块加载网络错误 ${module.name}:`, error);
-                loadModules(index + 1);
-            }
-        });
-    }
-
-    // 加载样式
+    // 加载样式（在主模块中执行，确保GM_addStyle可用）
     function loadStyles() {
         const styles = `
             .ilabel-draggable {
@@ -179,7 +144,51 @@
         GM_addStyle(styles);
     }
 
-    // 初始化
+    // 加载所有模块
+    function loadModules(index) {
+        if (index >= MODULES.length) {
+            console.log('所有模块加载完成，初始化完成');
+
+            // 触发所有模块加载完成事件
+            window.dispatchEvent(new CustomEvent('ilabel:allModulesLoaded'));
+            return;
+        }
+
+        const module = MODULES[index];
+        const moduleUrl = `https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/${module.url}`;
+
+        console.log(`正在加载模块: ${module.name}`);
+
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: moduleUrl + '?t=' + Date.now(),
+            onload: function (response) {
+                if (response.status === 200) {
+                    try {
+                        // 执行模块代码，传入iLabel对象
+                        new Function('iLabel', response.responseText)(window.iLabel);
+                        console.log(`模块加载成功: ${module.name}`);
+
+                        // 加载下一个模块
+                        setTimeout(() => loadModules(index + 1), 10);
+                    } catch (e) {
+                        console.error(`模块执行失败 ${module.name}:`, e);
+                        // 继续加载下一个
+                        loadModules(index + 1);
+                    }
+                } else {
+                    console.error(`模块加载失败 ${module.name}，状态码:`, response.status);
+                    loadModules(index + 1);
+                }
+            },
+            onerror: function (error) {
+                console.error(`模块加载网络错误 ${module.name}:`, error);
+                loadModules(index + 1);
+            }
+        });
+    }
+
+    // 先加载样式，再加载模块
     loadStyles();
     loadModules(0);
 })();
