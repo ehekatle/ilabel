@@ -1,5 +1,5 @@
 // ==MainEntry==
-// iLabel辅助工具主入口 - 版本 3.0.2
+// iLabel辅助工具主入口 - 版本 3.0.3
 // ==/MainEntry==
 
 (function () {
@@ -7,26 +7,34 @@
 
     console.log('iLabel辅助工具主模块启动');
 
-    // 检查GM函数是否可用
-    if (typeof GM_getValue === 'undefined' ||
-        typeof GM_setValue === 'undefined' ||
-        typeof GM_xmlhttpRequest === 'undefined' ||
-        typeof GM_addStyle === 'undefined') {
-        console.error('GM_* 函数不可用，请检查油猴脚本权限设置');
-        return;
-    }
+    // 注意：在new Function中无法直接访问GM_*函数
+    // 所以这里不检查GM_*函数，而是直接传递
 
     // 将GM函数传递给远程模块
     const gmAPI = {
-        getValue: GM_getValue,
-        setValue: GM_setValue,
-        xmlhttpRequest: GM_xmlhttpRequest,
-        addStyle: GM_addStyle
+        getValue: typeof GM_getValue !== 'undefined' ? GM_getValue : null,
+        setValue: typeof GM_setValue !== 'undefined' ? GM_setValue : null,
+        xmlhttpRequest: typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : null,
+        addStyle: typeof GM_addStyle !== 'undefined' ? GM_addStyle : null
     };
+
+    // 检查GM API是否可用
+    if (!gmAPI.getValue || !gmAPI.setValue || !gmAPI.xmlhttpRequest || !gmAPI.addStyle) {
+        console.error('GM_* 函数不可用，请检查油猴脚本权限设置');
+        console.error('可用的GM函数:', {
+            getValue: !!gmAPI.getValue,
+            setValue: !!gmAPI.setValue,
+            xmlhttpRequest: !!gmAPI.xmlhttpRequest,
+            addStyle: !!gmAPI.addStyle
+        });
+        return;
+    }
 
     // 存储模块导出和GM API
     window.iLabel = window.iLabel || {};
     window.iLabel.gm = gmAPI;  // 提供GM API给远程模块
+
+    console.log('GM API已传递给远程模块');
 
     // 模块加载顺序
     const MODULES = [
