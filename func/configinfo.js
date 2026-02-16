@@ -4,6 +4,9 @@
 (function (iLabel) {
     'use strict';
 
+    // 获取GM API
+    const gm = iLabel.gm;
+
     // 默认配置
     const DEFAULT_CONFIG = {
         globalConfig: {
@@ -27,22 +30,19 @@
                 { name: "林志洋", mobile: "13640598040" }
             ],
             anchorWhiteList: {
-                // 主播ID白名单（纯数字ID）
                 anchorUserIdWhiteList: ["123456789", "987654321", "555666777", "888999000"],
-                // 主播昵称白名单（关键词）
                 nicknameWhiteList: "百年对语 东南军迷俱乐部 广东新闻广描 广东新闻频道 广东移动频道 湖南国际瑰宝雅集 湖南国际频道文创甄选 湖南国际珍宝收藏 琳琅瑰宝雅集 央博匠心 雨家饰品 雨家首饰 豫见新财富 BRTV大家收藏 BRTV首都经济报道 好物珍宝 央博典藏 央博非遗珍宝 央博好物 央博木作 央博".split(' '),
-                // 主播认证白名单（关键词）
                 authStatusWhiteList: "事业媒体 事业单位 深圳周大福在线传媒有限公司 上海老凤祥旅游产品有限公司 上海老凤祥有限公司 周六福电子商务有限公司 周大生珠宝股份有限公司 周大生 CHOW TAI SENG 六福营销策划(重庆)有限公司 中金珠宝（三亚）有限公司 中国黄金集团黄金珠宝（北京）有限公司 中国黄金集团团黄金珠宝股份有限公司 珀思岚 深圳市珀思岚电子商务有限公司 京润珍珠 深圳京润蔻润商业发展有限公司 京润珍珠 GN PEARL 北京故宫文化传播有限公司 故宫文化创意产业有限公司".split(' ')
             },
             popupColor: {
-                targetedColor: { bg: '#000000', border: '#000000', text: '#ffffff' },      // 点杀单 - 黑色
-                prefilledColor: { bg: '#ffebee', border: '#f44336', text: '#c62828' },      // 预埋单 - 红色
-                exemptedColor: { bg: '#e8f5e9', border: '#4caf50', text: '#2e7d32' },       // 豁免单 - 绿色
-                reviewColor: { bg: '#e3f2fd', border: '#2196f3', text: '#1565c0' },         // 复核单 - 蓝色
-                penaltyColor: { bg: '#fff3e0', border: '#ff9800', text: '#ef6c00' },        // 违规单 - 黄色
-                noteColor: { bg: '#bbdefb', border: '#64b5f6', text: '#0d47a1' },           // 送审备注 - 浅蓝色
-                complaintColor: { bg: '#f5f5f5', border: '#9e9e9e', text: '#424242' },      // 投诉单 - 灰色
-                normalColor: { bg: '#f5f5f5', border: '#9e9e9e', text: '#424242' }          // 普通单 - 灰色
+                targetedColor: { bg: '#000000', border: '#000000', text: '#ffffff' },
+                prefilledColor: { bg: '#ffebee', border: '#f44336', text: '#c62828' },
+                exemptedColor: { bg: '#e8f5e9', border: '#4caf50', text: '#2e7d32' },
+                reviewColor: { bg: '#e3f2fd', border: '#2196f3', text: '#1565c0' },
+                penaltyColor: { bg: '#fff3e0', border: '#ff9800', text: '#ef6c00' },
+                noteColor: { bg: '#bbdefb', border: '#64b5f6', text: '#0d47a1' },
+                complaintColor: { bg: '#f5f5f5', border: '#9e9e9e', text: '#424242' },
+                normalColor: { bg: '#f5f5f5', border: '#9e9e9e', text: '#424242' }
             },
             penaltyKeywords: "金包 金重量 金含量 金镯子 金项链 金子这么便宜 缅 曼德勒 越南 老仓库".split(' '),
             pushUrl: {
@@ -61,10 +61,10 @@
                 complaint: true,
                 normal: true
             },
-            alarmRingFlag: 0,  // 0:关闭, 1:开启测试, 2:开启并响铃
-            popupArrange: 'horizontal',  // horizontal/vertical
+            alarmRingFlag: 0,
+            popupArrange: 'horizontal',
             popupPosition: { x: '50%', y: '50%' },
-            popupSize: 100  // 百分比
+            popupSize: 100
         }
     };
 
@@ -81,7 +81,7 @@
          * 从本地存储加载配置
          */
         load() {
-            const saved = GM_getValue('ilabel_config', null);
+            const saved = gm.getValue('ilabel_config', null);
             if (saved) {
                 try {
                     this.config = JSON.parse(saved);
@@ -90,12 +90,10 @@
                     this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
                 }
             } else {
-                // 深拷贝默认配置
                 this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
                 this.save();
             }
 
-            // 更新到全局数据
             if (iLabel.currentData) {
                 iLabel.currentData.config = this.config;
             }
@@ -107,14 +105,12 @@
          * 保存配置到本地存储
          */
         save() {
-            GM_setValue('ilabel_config', JSON.stringify(this.config));
+            gm.setValue('ilabel_config', JSON.stringify(this.config));
 
-            // 更新全局数据
             if (iLabel.currentData) {
                 iLabel.currentData.config = this.config;
             }
 
-            // 触发配置更新事件
             window.dispatchEvent(new CustomEvent('ilabel:configChanged', {
                 detail: this.config
             }));
@@ -146,7 +142,6 @@
 
         /**
          * 更新用户配置
-         * @param {Object} updates - 要更新的字段
          */
         updateUser(updates) {
             const config = this.get();
@@ -157,25 +152,18 @@
 
         /**
          * 从远程同步全局配置
-         * @param {Function} callback - 回调函数
          */
         syncGlobalFromRemote(callback) {
             const remoteUrl = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/func/configinfo.js';
 
-            GM_xmlhttpRequest({
+            gm.xmlhttpRequest({
                 method: 'GET',
                 url: remoteUrl + '?t=' + Date.now(),
                 onload: (response) => {
                     if (response.status === 200) {
                         try {
-                            // 注意：这里需要从远程文件中提取 DEFAULT_CONFIG
-                            // 简单方案：假设远程返回的是可执行的JS，我们提取其中的DEFAULT_CONFIG
-                            // 这里简化处理，实际可能需要更复杂的解析
-
-                            // 为了演示，我们直接使用本地的DEFAULT_CONFIG
-                            // 实际应用中，应该从远程获取最新配置
+                            // 简化处理，实际应解析远程配置
                             const remoteConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
-
                             const currentConfig = this.get();
                             currentConfig.globalConfig = remoteConfig.globalConfig;
                             this.save();
@@ -197,7 +185,6 @@
 
         /**
          * 获取类型对应的颜色配置
-         * @param {string} type - 类型名称
          */
         getColorForType(type) {
             const globalConfig = this.getGlobal();

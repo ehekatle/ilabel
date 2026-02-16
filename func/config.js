@@ -4,6 +4,7 @@
 (function (iLabel) {
     'use strict';
 
+    const gm = iLabel.gm;
     let configPanel = null;
 
     /**
@@ -107,7 +108,6 @@
 
         document.body.appendChild(configPanel);
 
-        // 滑块和输入框联动
         const sizeSlider = document.getElementById('ilabel-size-slider');
         const sizeInput = document.getElementById('ilabel-size-input');
 
@@ -122,15 +122,12 @@
             this.value = val;
         });
 
-        // 保存按钮
         document.getElementById('ilabel-config-save').addEventListener('click', function () {
-            // 收集提示类型配置
             const promptConfig = {};
             document.querySelectorAll('[data-type]').forEach(cb => {
                 promptConfig[cb.dataset.type] = cb.checked;
             });
 
-            // 收集其他配置
             const updates = {
                 promptConfig: promptConfig,
                 popupArrange: document.getElementById('ilabel-arrange-select').value,
@@ -140,7 +137,6 @@
 
             iLabel.Config.updateUser(updates);
 
-            // 显示保存成功提示
             const tip = document.createElement('div');
             tip.textContent = '✓ 配置已保存';
             tip.style.cssText = 'position:fixed; top:20px; right:20px; background:#4caf50; color:white; padding:8px 16px; border-radius:4px; z-index:1000001;';
@@ -148,7 +144,6 @@
             setTimeout(() => tip.remove(), 2000);
         });
 
-        // 同步按钮
         document.getElementById('ilabel-config-sync').addEventListener('click', function () {
             const btn = this;
             btn.disabled = true;
@@ -162,7 +157,6 @@
                     alert('同步失败: ' + err.message);
                 } else {
                     alert('全局配置同步成功');
-                    // 刷新面板
                     configPanel.remove();
                     configPanel = null;
                     createConfigPanel();
@@ -170,7 +164,6 @@
             });
         });
 
-        // 关闭按钮
         document.getElementById('ilabel-config-close').addEventListener('click', function () {
             configPanel.style.display = 'none';
         });
