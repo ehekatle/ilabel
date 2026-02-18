@@ -87,7 +87,7 @@
     // 检查所有类型
     function checkAllTypes(liveData, context) {
         const types = [];
-        const config = context.state.globalConfig;
+        const config = state.globalConfig;
 
         if (!config) return types;
 
@@ -127,7 +127,7 @@
             types.push('complaint');
         }
 
-        // 普通单
+        // 普通单（如果没有其他类型）
         if (types.length === 0) {
             types.push('normal');
         }
@@ -151,31 +151,31 @@
     function isExempted(data, config) {
         const whiteList = config.anchorWhiteList || {};
 
-        // 检查主播昵称白名单
-        if (data.nickname && whiteList.nicknameWhiteList) {
+        // 1. 检查主播ID白名单（精确匹配）
+        if (data.anchorUserId && whiteList.anchorUserIdWhiteList && whiteList.anchorUserIdWhiteList.length > 0) {
+            if (whiteList.anchorUserIdWhiteList.includes(data.anchorUserId)) {
+                console.log(`豁免命中: 主播ID "${data.anchorUserId}" 在白名单中`);
+                return true;
+            }
+        }
+
+        // 2. 检查主播昵称白名单（包含匹配）
+        if (data.nickname && whiteList.nicknameWhiteList && whiteList.nicknameWhiteList.length > 0) {
             for (const keyword of whiteList.nicknameWhiteList) {
                 if (keyword && data.nickname.includes(keyword)) {
-                    console.log(`豁免命中: 昵称包含 "${keyword}"`);
+                    console.log(`豁免命中: 昵称包含白名单关键词 "${keyword}"`);
                     return true;
                 }
             }
         }
 
-        // 检查主播认证白名单
-        if (data.authStatus && whiteList.authStatusWhiteList) {
+        // 3. 检查主播认证白名单（包含匹配）
+        if (data.authStatus && whiteList.authStatusWhiteList && whiteList.authStatusWhiteList.length > 0) {
             for (const keyword of whiteList.authStatusWhiteList) {
                 if (keyword && data.authStatus.includes(keyword)) {
-                    console.log(`豁免命中: 认证包含 "${keyword}"`);
+                    console.log(`豁免命中: 认证包含白名单关键词 "${keyword}"`);
                     return true;
                 }
-            }
-        }
-
-        // 检查主播ID白名单
-        if (data.anchorUserId && whiteList.anchorUserIdWhiteList) {
-            if (whiteList.anchorUserIdWhiteList.includes(data.anchorUserId)) {
-                console.log(`豁免命中: 主播ID "${data.anchorUserId}"`);
-                return true;
             }
         }
 
@@ -208,4 +208,4 @@
         return { found: false };
     }
 
-})(typeof context !== 'undefined' ? context : window.__moduleContext);
+})(typeof context !== 'undefined' ? context : window.__ilabelContext);

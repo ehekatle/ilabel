@@ -30,25 +30,26 @@
 
     let vueApp = null;
     let toolContainer = null;
+    let overlay = null;
     let menuCommandId = null;
 
     // 注册菜单命令
     function registerMenuCommand() {
-        // 如果已经注册，先移除
-        if (menuCommandId !== null) {
-            try {
-                GM_registerMenuCommand('', function () { }, { autoClose: false });
-            } catch (e) {
-                // 忽略错误
+        try {
+            // 如果已经注册，先移除（GM_registerMenuCommand没有直接移除的方法，这里只是标记）
+            if (menuCommandId !== null) {
+                console.log('重新注册菜单命令');
             }
+
+            // 注册新的菜单命令
+            menuCommandId = context.GM_registerMenuCommand('⚙️ iLabel配置工具', () => {
+                openConfigTool();
+            });
+
+            console.log('配置工具菜单命令已注册');
+        } catch (e) {
+            console.error('注册菜单命令失败', e);
         }
-
-        // 注册新的菜单命令
-        menuCommandId = GM_registerMenuCommand('⚙️ iLabel配置工具', () => {
-            openConfigTool();
-        });
-
-        console.log('配置工具菜单命令已注册');
     }
 
     // 打开配置工具
@@ -62,6 +63,7 @@
             vueApp.alarmRing = state.userConfig.alarmRing;
 
             toolContainer.style.display = 'block';
+            if (overlay) overlay.style.display = 'block';
             return;
         }
 
@@ -73,13 +75,32 @@
     function closeConfigTool() {
         if (toolContainer) {
             toolContainer.style.display = 'none';
-            // 关闭提示预览
-            utils.closePrompt();
         }
+        if (overlay) {
+            overlay.style.display = 'none';
+        }
+        // 关闭提示预览
+        utils.closePrompt();
     }
 
     // 创建配置工具UI
     function createToolUI() {
+        // 创建遮罩层
+        overlay = document.createElement('div');
+        overlay.id = 'ilabel-config-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000000;
+            display: none;
+        `;
+        overlay.addEventListener('click', closeConfigTool);
+        document.body.appendChild(overlay);
+
         // 创建容器
         toolContainer = document.createElement('div');
         toolContainer.id = 'ilabel-config-tool';
@@ -100,22 +121,6 @@
             display: none;
         `;
         document.body.appendChild(toolContainer);
-
-        // 添加遮罩层
-        const overlay = document.createElement('div');
-        overlay.id = 'ilabel-config-overlay';
-        overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000000;
-            display: none;
-        `;
-        overlay.addEventListener('click', closeConfigTool);
-        document.body.appendChild(overlay);
 
         // 引入Vue
         const vueScript = document.createElement('script');
@@ -142,7 +147,7 @@
         `;
 
         toolContainer.style.display = 'block';
-        document.getElementById('ilabel-config-overlay').style.display = 'block';
+        if (overlay) overlay.style.display = 'block';
     }
 
     // 初始化Vue应用
@@ -562,7 +567,6 @@
             methods: {
                 closeTool() {
                     closeConfigTool();
-                    document.getElementById('ilabel-config-overlay').style.display = 'none';
                 },
                 onAlarmChange() {
                     this.updatePromptPreview();
@@ -668,8 +672,8 @@
                         to { transform: translateX(0); opacity: 1; }
                     }
                     @keyframes slideOut {
-                        from { transform: translateX(0); opacity: 1; }
-                        to { transform: translateX(100%); opacity: 0; }
+                        from { transform: translateX(100%); opacity: 1; }
+                        to { transform: translateX(0); opacity: 0; }
                     }
                 `;
                 document.head.appendChild(style);
@@ -678,11 +682,11 @@
 
         // 显示工具和遮罩
         toolContainer.style.display = 'block';
-        document.getElementById('ilabel-config-overlay').style.display = 'block';
+        if (overlay) overlay.style.display = 'block';
     }
 
     // 注册到context
-    context.state.configToolInstance = {
+    state.configToolInstance = {
         open: openConfigTool,
         close: closeConfigTool,
         registerMenuCommand: registerMenuCommand
@@ -691,4 +695,4 @@
     // 自动注册菜单命令
     registerMenuCommand();
 
-})(typeof context !== 'undefined' ? context : window.__moduleContext);
+})(typeof context !== 'undefined' ? context : window.__ilabelContext);

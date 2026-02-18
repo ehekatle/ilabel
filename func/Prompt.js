@@ -236,7 +236,7 @@
 
         console.log('发送提醒推送:', data);
 
-        GM_xmlhttpRequest({
+        context.GM_xmlhttpRequest({
             method: 'POST',
             url: pushUrl,
             headers: {
@@ -397,9 +397,9 @@
     }
 
     // 注册到context
-    context.state.promptInstance = {
+    state.promptInstance = {
         show: showPrompt,
         close: closePrompt
     };
 
-})(typeof context !== 'undefined' ? context : window.__moduleContext);
+})(typeof context !== 'undefined' ? context : window.__ilabelContext);

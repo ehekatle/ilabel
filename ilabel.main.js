@@ -1,4 +1,4 @@
-/* iLabel直播审核辅助 - 主入口文件 v3.0.0 */
+/* iLabel直播审核辅助 - 主入口文件 v3.0.1 */
 
 (function () {
     'use strict';
@@ -79,24 +79,53 @@
                 loadModule(MODULES.prompt)
             ]);
 
-            // 创建模块上下文
+            // 创建模块上下文，传入GM API
             const moduleContext = {
                 state,
                 STORAGE_KEYS,
                 DEFAULT_USER_CONFIG,
+                // 传入GM API
+                GM_getValue: GM_getValue,
+                GM_setValue: GM_setValue,
+                GM_deleteValue: GM_deleteValue,
+                GM_listValues: GM_listValues,
+                GM_xmlhttpRequest: GM_xmlhttpRequest,
+                GM_registerMenuCommand: GM_registerMenuCommand,
                 utils: {
                     loadGlobalConfig: loadGlobalConfig.bind(this),
                     saveUserConfig: saveUserConfig.bind(this),
                     showPrompt: showPrompt.bind(this),
                     closePrompt: closePrompt.bind(this),
-                    playTestAlarm: playTestAlarm.bind(this)
+                    playTestAlarm: playTestAlarm.bind(this),
+                    sendReminderPush: sendReminderPush.bind(this),
+                    sendAnswerPush: sendAnswerPush.bind(this)
                 }
             };
 
+            // 将context挂载到window上，供模块访问
+            window.__ilabelContext = moduleContext;
+
             // 执行模块
-            new Function('context', configToolCode)(moduleContext);
-            new Function('context', getInfoCode)(moduleContext);
-            new Function('context', promptCode)(moduleContext);
+            try {
+                new Function('context', configToolCode)(moduleContext);
+                console.log('configTool模块加载成功');
+            } catch (e) {
+                console.error('configTool模块加载失败', e);
+            }
+
+            try {
+                new Function('context', getInfoCode)(moduleContext);
+                console.log('getInfo模块加载成功');
+            } catch (e) {
+                console.error('getInfo模块加载失败', e);
+            }
+
+            try {
+                new Function('context', promptCode)(moduleContext);
+                console.log('prompt模块加载成功');
+            } catch (e) {
+                console.error('prompt模块加载失败', e);
+            }
 
             // 启动配置检查定时器
             startConfigChecker();
@@ -113,22 +142,33 @@
 
     // 加载用户配置
     function loadUserConfig() {
-        const saved = GM_getValue(STORAGE_KEYS.USER_CONFIG, null);
-        if (saved) {
-            try {
-                state.userConfig = JSON.parse(saved);
-            } catch (e) {
-                console.error('解析用户配置失败，使用默认配置', e);
-                state.userConfig = { ...DEFAULT_USER_CONFIG };
+        try {
+            const saved = GM_getValue(STORAGE_KEYS.USER_CONFIG, null);
+            if (saved) {
+                try {
+                    state.userConfig = JSON.parse(saved);
+                } catch (e) {
+                    console.error('解析用户配置失败，使用默认配置', e);
+                    state.userConfig = JSON.parse(JSON.stringify(DEFAULT_USER_CONFIG));
+                }
+            } else {
+                state.userConfig = JSON.parse(JSON.stringify(DEFAULT_USER_CONFIG));
             }
-        } else {
-            state.userConfig = { ...DEFAULT_USER_CONFIG };
+            console.log('用户配置加载成功', state.userConfig);
+        } catch (e) {
+            console.error('加载用户配置失败', e);
+            state.userConfig = JSON.parse(JSON.stringify(DEFAULT_USER_CONFIG));
         }
     }
 
     // 保存用户配置
     function saveUserConfig() {
-        GM_setValue(STORAGE_KEYS.USER_CONFIG, JSON.stringify(state.userConfig));
+        try {
+            GM_setValue(STORAGE_KEYS.USER_CONFIG, JSON.stringify(state.userConfig));
+            console.log('用户配置保存成功');
+        } catch (e) {
+            console.error('保存用户配置失败', e);
+        }
     }
 
     // 加载全局配置
@@ -180,20 +220,29 @@
 
     // 注册菜单命令
     function registerMenuCommands() {
-        GM_registerMenuCommand('⚙️ 打开配置工具', () => {
-            if (state.configToolInstance && typeof state.configToolInstance.open === 'function') {
-                state.configToolInstance.open();
-            }
-        });
+        try {
+            GM_registerMenuCommand('⚙️ 打开配置工具', () => {
+                if (state.configToolInstance && typeof state.configToolInstance.open === 'function') {
+                    state.configToolInstance.open();
+                } else {
+                    console.warn('配置工具未就绪');
+                    alert('配置工具正在初始化，请稍后再试');
+                }
+            });
 
-        GM_registerMenuCommand('🔄 立即更新远程配置', async () => {
-            await loadGlobalConfig(true);
-            alert('全局配置更新完成');
-        });
+            GM_registerMenuCommand('🔄 立即更新远程配置', async () => {
+                await loadGlobalConfig(true);
+                alert('全局配置更新完成');
+            });
 
-        GM_registerMenuCommand('🔊 测试闹钟', () => {
-            playTestAlarm();
-        });
+            GM_registerMenuCommand('🔊 测试闹钟', () => {
+                playTestAlarm();
+            });
+
+            console.log('菜单命令注册成功');
+        } catch (e) {
+            console.error('注册菜单命令失败', e);
+        }
     }
 
     // 启动配置检查器
@@ -259,6 +308,90 @@
         }
     }
 
+    // 发送提醒推送
+    function sendReminderPush(content, mentionedMobile) {
+        const pushUrl = state.globalConfig?.pushUrl?.reminderPushUrl;
+        if (!pushUrl) {
+            console.error('提醒推送地址未配置');
+            return;
+        }
+
+        const data = {
+            msgtype: "text",
+            text: {
+                content: content
+            }
+        };
+
+        if (mentionedMobile) {
+            data.text.mentioned_mobile_list = [mentionedMobile];
+        }
+
+        console.log('发送提醒推送:', data);
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: pushUrl,
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            data: JSON.stringify(data),
+            timeout: 5000,
+            onload: function (response) {
+                if (response.status === 200) {
+                    console.log('提醒推送成功');
+                } else {
+                    console.error('提醒推送失败:', response.status);
+                }
+            },
+            onerror: function (error) {
+                console.error('提醒推送错误:', error);
+            }
+        });
+    }
+
+    // 发送答案推送
+    function sendAnswerPush(auditData) {
+        const pushUrl = state.globalConfig?.pushUrl?.answerPushUrl;
+
+        if (!pushUrl) {
+            console.error('答案推送地址未配置');
+            return;
+        }
+
+        const timeStr = formatTime24();
+        const content = `审核提交记录\n时间: ${timeStr}\ntask_id: ${auditData.task_id}\nlive_id: ${auditData.live_id}\n结论: ${auditData.conclusion}\n操作人: ${auditData.operator}`;
+
+        const data = {
+            msgtype: "text",
+            text: {
+                content: content
+            }
+        };
+
+        console.log('发送答案推送:', data);
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: pushUrl,
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            data: JSON.stringify(data),
+            timeout: 5000,
+            onload: function (response) {
+                if (response.status === 200) {
+                    console.log('答案推送成功');
+                } else {
+                    console.error('答案推送失败:', response.status);
+                }
+            },
+            onerror: function (error) {
+                console.error('答案推送错误:', error);
+            }
+        });
+    }
+
     // 设置请求拦截
     function setupRequestInterception(context) {
         // 拦截fetch请求
@@ -287,7 +420,7 @@
                         if (response.ok) {
                             response.clone().json().then(data => {
                                 if (data.status === 'ok') {
-                                    handleAnswerSubmit(args[1]?.body, data, context);
+                                    handleAnswerSubmit(args[1]?.body, context);
                                 }
                             }).catch(() => { });
                         }
@@ -331,7 +464,7 @@
                         try {
                             const data = JSON.parse(xhr.responseText);
                             if (data.status === 'ok') {
-                                handleAnswerSubmit(body, data, context);
+                                handleAnswerSubmit(body, context);
                             }
                         } catch (e) { }
                     }
@@ -366,20 +499,22 @@
                 auditRemark: auditInfo.auditRemark || ''
             };
 
-            context.state.currentLiveData = liveData;
+            state.currentLiveData = liveData;
 
             // 判断所有类型
             const types = checkAllTypes(liveData, context);
-            context.state.currentTypes = types;
+            state.currentTypes = types;
+
+            console.log('直播信息分析结果:', { liveData, types });
 
             // 根据用户配置过滤
             const filteredTypes = types.filter(type =>
-                context.state.userConfig.promptType.includes(type)
+                state.userConfig.promptType.includes(type)
             );
 
             // 显示提示
-            if (filteredTypes.length > 0 || context.state.userConfig.alarmRing) {
-                context.utils.showPrompt(liveData, filteredTypes);
+            if (filteredTypes.length > 0 || state.userConfig.alarmRing) {
+                showPrompt(liveData, filteredTypes);
             }
 
         } catch (error) {
@@ -388,7 +523,7 @@
     }
 
     // 处理答案提交
-    function handleAnswerSubmit(body, responseData, context) {
+    function handleAnswerSubmit(body, context) {
         try {
             const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
 
@@ -435,7 +570,7 @@
                 console.log('审核结果:', auditData);
 
                 // 推送答案
-                sendAnswerPush(auditData, context);
+                sendAnswerPush(auditData);
             });
 
         } catch (error) {
@@ -446,47 +581,47 @@
     // 判断所有类型
     function checkAllTypes(liveData, context) {
         const types = [];
-        const config = context.state.globalConfig;
+        const config = state.globalConfig;
 
         if (!config) return types;
 
-        // 1. 预埋单检查
+        // 预埋单检查
         if (isPrefilledOrder(liveData)) {
             types.push('prefilled');
         }
 
-        // 2. 豁免检查
+        // 豁免检查
         if (isExempted(liveData, config)) {
             types.push('exempted');
         }
 
-        // 3. 复核单检查
+        // 复核单检查
         if (liveData.auditRemark && liveData.auditRemark.includes('复核')) {
             types.push('review');
         }
 
-        // 4. 点杀单检查
+        // 点杀单检查
         if (liveData.auditRemark && liveData.auditRemark.includes('辛苦注意审核')) {
             types.push('targeted');
         }
 
-        // 5. 处罚检查
+        // 处罚检查
         const penaltyResult = checkPenalty(liveData, config);
         if (penaltyResult.found) {
             types.push('penalty');
         }
 
-        // 6. 送审备注检查
+        // 送审备注检查
         if (liveData.auditRemark && liveData.auditRemark.includes('辛苦审核')) {
             types.push('note');
         }
 
-        // 7. 投诉检查
+        // 投诉检查
         if (liveData.auditRemark && liveData.auditRemark.includes('投诉')) {
             types.push('complaint');
         }
 
-        // 8. 普通单（如果没有其他类型）
+        // 普通单（如果没有其他类型）
         if (types.length === 0) {
             types.push('normal');
         }
@@ -510,28 +645,31 @@
     function isExempted(data, config) {
         const whiteList = config.anchorWhiteList || {};
 
-        // 检查主播昵称白名单
-        if (data.nickname && whiteList.nicknameWhiteList) {
+        // 1. 检查主播ID白名单（精确匹配）
+        if (data.anchorUserId && whiteList.anchorUserIdWhiteList && whiteList.anchorUserIdWhiteList.length > 0) {
+            if (whiteList.anchorUserIdWhiteList.includes(data.anchorUserId)) {
+                console.log(`豁免命中: 主播ID "${data.anchorUserId}" 在白名单中`);
+                return true;
+            }
+        }
+
+        // 2. 检查主播昵称白名单（包含匹配）
+        if (data.nickname && whiteList.nicknameWhiteList && whiteList.nicknameWhiteList.length > 0) {
             for (const keyword of whiteList.nicknameWhiteList) {
                 if (keyword && data.nickname.includes(keyword)) {
+                    console.log(`豁免命中: 昵称包含白名单关键词 "${keyword}"`);
                     return true;
                 }
             }
         }
 
-        // 检查主播认证白名单
-        if (data.authStatus && whiteList.authStatusWhiteList) {
+        // 3. 检查主播认证白名单（包含匹配）
+        if (data.authStatus && whiteList.authStatusWhiteList && whiteList.authStatusWhiteList.length > 0) {
             for (const keyword of whiteList.authStatusWhiteList) {
                 if (keyword && data.authStatus.includes(keyword)) {
+                    console.log(`豁免命中: 认证包含白名单关键词 "${keyword}"`);
                     return true;
                 }
-            }
-        }
-
-        // 检查主播ID白名单
-        if (data.anchorUserId && whiteList.anchorUserIdWhiteList) {
-            if (whiteList.anchorUserIdWhiteList.includes(data.anchorUserId)) {
-                return true;
             }
         }
 
@@ -634,48 +772,6 @@
         } catch (e) {
             return str;
         }
-    }
-
-    // 推送答案
-    function sendAnswerPush(auditData, context) {
-        const pushUrl = context.state.globalConfig?.pushUrl?.answerPushUrl;
-
-        if (!pushUrl) {
-            console.error('答案推送地址未配置');
-            return;
-        }
-
-        const timeStr = formatTime24();
-        const content = `审核提交记录\n时间: ${timeStr}\ntask_id: ${auditData.task_id}\nlive_id: ${auditData.live_id}\n结论: ${auditData.conclusion}\n操作人: ${auditData.operator}`;
-
-        const data = {
-            msgtype: "text",
-            text: {
-                content: content
-            }
-        };
-
-        console.log('发送答案推送:', data);
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: pushUrl,
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            data: JSON.stringify(data),
-            timeout: 5000,
-            onload: function (response) {
-                if (response.status === 200) {
-                    console.log('答案推送成功');
-                } else {
-                    console.error('答案推送失败:', response.status);
-                }
-            },
-            onerror: function (error) {
-                console.error('答案推送错误:', error);
-            }
-        });
     }
 
     // 格式化时间
