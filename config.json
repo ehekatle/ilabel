@@ -75,10 +75,7 @@
             }
         ],
         "anchorWhiteList": {
-            "anchorUserIdWhiteList": [
-                "示例主播ID1",
-                "示例主播ID2"
-            ],
+            "anchorUserIdWhiteList": [],
             "nicknameWhiteList": [
                 "百年对语",
                 "东南军迷俱乐部",
