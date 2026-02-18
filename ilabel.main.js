@@ -1,295 +1,689 @@
-// ==MainEntry==
-// iLabel辅助工具主入口 - 版本 3.0.4
-// ==/MainEntry==
+/* iLabel直播审核辅助 - 主入口文件 v3.0.0 */
 
 (function () {
     'use strict';
 
-    console.log('iLabel辅助工具主模块启动');
-
-    // 注意：在new Function中无法直接访问GM_*函数
-    // 所以我们需要通过闭包来捕获这些函数
-    // 这里尝试从上层作用域获取GM函数
-    let gmFunctions = {
-        getValue: null,
-        setValue: null,
-        xmlhttpRequest: null,
-        addStyle: null
+    // 模块路径配置
+    const MODULES = {
+        config: 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/config.json',
+        configTool: 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/func/configTool.js',
+        getInfo: 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/func/getinfo.js',
+        prompt: 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/func/prompt.js'
     };
 
-    try {
-        // 尝试从上层作用域获取GM函数
-        // 在油猴脚本中，这些函数应该在全局作用域可用
-        gmFunctions = {
-            getValue: typeof GM_getValue !== 'undefined' ? GM_getValue : (typeof window.GM_getValue !== 'undefined' ? window.GM_getValue : null),
-            setValue: typeof GM_setValue !== 'undefined' ? GM_setValue : (typeof window.GM_setValue !== 'undefined' ? window.GM_setValue : null),
-            xmlhttpRequest: typeof GM_xmlhttpRequest !== 'undefined' ? GM_xmlhttpRequest : (typeof window.GM_xmlhttpRequest !== 'undefined' ? window.GM_xmlhttpRequest : null),
-            addStyle: typeof GM_addStyle !== 'undefined' ? GM_addStyle : (typeof window.GM_addStyle !== 'undefined' ? window.GM_addStyle : null)
-        };
-    } catch (e) {
-        console.error('获取GM函数时出错:', e);
-    }
+    // 全局状态
+    const state = {
+        globalConfig: null,
+        userConfig: null,
+        currentLiveData: null,
+        currentTypes: [],
+        promptInstance: null,
+        configToolInstance: null,
+        lastConfigCheck: 0,
+        audioContext: null,
+        alarmAudio: null
+    };
 
-    // 检查GM API是否可用，但即使不可用也继续执行（有些模块可能不需要）
-    const gmAvailable = !!(gmFunctions.getValue && gmFunctions.setValue && gmFunctions.xmlhttpRequest && gmFunctions.addStyle);
+    // 存储键名
+    const STORAGE_KEYS = {
+        GLOBAL_CONFIG: 'ilabel_global_config',
+        USER_CONFIG: 'ilabel_user_config',
+        LAST_CONFIG_UPDATE: 'ilabel_last_config_update'
+    };
 
-    if (!gmAvailable) {
-        console.warn('部分GM_* 函数不可用，某些功能可能受限');
-        console.warn('可用的GM函数:', {
-            getValue: !!gmFunctions.getValue,
-            setValue: !!gmFunctions.setValue,
-            xmlhttpRequest: !!gmFunctions.xmlhttpRequest,
-            addStyle: !!gmFunctions.addStyle
+    // 默认用户配置
+    const DEFAULT_USER_CONFIG = {
+        promptType: ['targeted', 'prefilled', 'exempted', 'review', 'penalty', 'note', 'complaint', 'normal'],
+        promptArrange: 'horizontal',
+        promptSize: 100,
+        promptPosition: { x: 100, y: 100 },
+        alarmRing: false
+    };
+
+    // 加载模块
+    async function loadModule(url) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: url + '?t=' + Date.now(),
+                onload: function (response) {
+                    if (response.status === 200) {
+                        resolve(response.responseText);
+                    } else {
+                        reject(new Error(`加载失败: ${response.status}`));
+                    }
+                },
+                onerror: reject
+            });
         });
     }
 
-    // 存储模块导出和GM API
-    window.iLabel = window.iLabel || {};
-    window.iLabel.gm = gmFunctions;  // 提供GM API给远程模块
+    // 初始化
+    async function init() {
+        console.log('iLabel辅助工具: 初始化开始');
 
-    console.log('GM API已传递给远程模块', gmAvailable ? '(完整)' : '(部分)');
-
-    // 模块加载顺序
-    const MODULES = [
-        { name: 'liveinfo', url: 'func/liveinfo.js' },       // 数据结构定义
-        { name: 'configinfo', url: 'func/configinfo.js' },   // 配置文件
-        { name: 'config', url: 'func/config.js' },           // 配置工具
-        { name: 'ringTool', url: 'func/ringTool.js' },       // 音乐播放器
-        { name: 'alarmRing', url: 'func/alarmRing.js' },     // 闹钟按钮
-        { name: 'getinfo', url: 'func/getinfo.js' },         // 信息获取
-        { name: 'checkinfo', url: 'func/checkinfo.js' },     // 类型判断
-        { name: 'push', url: 'func/push.js' },               // 推送参数拼接
-        { name: 'pushTool', url: 'func/pushTool.js' },       // 推送执行
-        { name: 'Prompt', url: 'func/Prompt.js' }            // 浮动提示
-    ];
-
-    // 加载样式（在主模块中执行，确保GM_addStyle可用）
-    function loadStyles() {
         try {
-            if (gmFunctions.addStyle) {
-                const styles = `
-                    .ilabel-draggable {
-                        cursor: move;
-                        user-select: none;
-                        position: fixed !important;
-                        z-index: 999999 !important;
-                    }
-                    
-                    .ilabel-prompt-container {
-                        display: flex;
-                        gap: 8px;
-                        padding: 10px;
-                        background: transparent;
-                        border-radius: 8px;
-                        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-                        transition: box-shadow 0.2s;
-                    }
-                    
-                    .ilabel-prompt-container:hover {
-                        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
-                    }
-                    
-                    .ilabel-prompt-item {
-                        padding: 6px 12px;
-                        border-radius: 20px;
-                        font-size: 14px;
-                        font-weight: bold;
-                        color: white;
-                        text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                        white-space: nowrap;
-                    }
-                    
-                    .ilabel-prompt-container.vertical {
-                        flex-direction: column;
-                    }
-                    
-                    .ilabel-prompt-container.horizontal {
-                        flex-direction: row;
-                    }
-                    
-                    .ilabel-alarm-button {
-                        position: fixed;
-                        bottom: 20px;
-                        left: 20px;
-                        width: 40px;
-                        height: 40px;
-                        border-radius: 50%;
-                        background: white;
-                        box-shadow: 0 2px 10px rgba(0,0,0,0.2);
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        cursor: pointer;
-                        z-index: 999998;
-                        transition: all 0.3s;
-                        border: 2px solid #ccc;
-                    }
-                    
-                    .ilabel-alarm-button.state0 {
-                        background: white;
-                        border-color: #ccc;
-                    }
-                    
-                    .ilabel-alarm-button.state0 svg {
-                        color: #666;
-                    }
-                    
-                    .ilabel-alarm-button.state1 {
-                        background: #4caf50;
-                        border-color: #4caf50;
-                    }
-                    
-                    .ilabel-alarm-button.state1 svg {
-                        color: white;
-                    }
-                    
-                    .ilabel-alarm-button.state2 {
-                        background: #f44336;
-                        border-color: #f44336;
-                    }
-                    
-                    .ilabel-alarm-button.state2 svg {
-                        color: white;
-                    }
-                    
-                    .ilabel-alarm-button svg {
-                        width: 24px;
-                        height: 24px;
-                    }
-                    
-                    .ilabel-config-panel {
-                        position: fixed;
-                        top: 50%;
-                        left: 50%;
-                        transform: translate(-50%, -50%);
-                        background: white;
-                        border-radius: 8px;
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-                        padding: 20px;
-                        z-index: 1000000;
-                        min-width: 300px;
-                        max-width: 400px;
-                    }
-                `;
+            // 加载用户配置
+            loadUserConfig();
 
-                gmFunctions.addStyle(styles);
-                console.log('样式加载成功');
-            } else {
-                console.warn('GM_addStyle不可用，无法添加样式');
-                // 尝试使用普通的style标签
-                const style = document.createElement('style');
-                style.textContent = `
-                    .ilabel-draggable { cursor: move; user-select: none; position: fixed !important; z-index: 999999 !important; }
-                    .ilabel-prompt-container { display: flex; gap: 8px; padding: 10px; background: transparent; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: box-shadow 0.2s; }
-                    .ilabel-prompt-container:hover { box-shadow: 0 6px 16px rgba(0,0,0,0.2); }
-                    .ilabel-prompt-item { padding: 6px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; color: white; text-shadow: 0 1px 2px rgba(0,0,0,0.2); box-shadow: 0 2px 4px rgba(0,0,0,0.1); white-space: nowrap; }
-                    .ilabel-prompt-container.vertical { flex-direction: column; }
-                    .ilabel-prompt-container.horizontal { flex-direction: row; }
-                    .ilabel-alarm-button { position: fixed; bottom: 20px; left: 20px; width: 40px; height: 40px; border-radius: 50%; background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 999998; transition: all 0.3s; border: 2px solid #ccc; }
-                    .ilabel-alarm-button.state0 { background: white; border-color: #ccc; }
-                    .ilabel-alarm-button.state0 svg { color: #666; }
-                    .ilabel-alarm-button.state1 { background: #4caf50; border-color: #4caf50; }
-                    .ilabel-alarm-button.state1 svg { color: white; }
-                    .ilabel-alarm-button.state2 { background: #f44336; border-color: #f44336; }
-                    .ilabel-alarm-button.state2 svg { color: white; }
-                    .ilabel-alarm-button svg { width: 24px; height: 24px; }
-                    .ilabel-config-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); padding: 20px; z-index: 1000000; min-width: 300px; max-width: 400px; }
-                `;
-                document.head.appendChild(style);
-                console.log('使用普通style标签添加样式');
-            }
-        } catch (e) {
-            console.error('样式加载失败:', e);
+            // 加载全局配置
+            await loadGlobalConfig();
+
+            // 注册菜单命令
+            registerMenuCommands();
+
+            // 加载并初始化各模块
+            const [configToolCode, getInfoCode, promptCode] = await Promise.all([
+                loadModule(MODULES.configTool),
+                loadModule(MODULES.getInfo),
+                loadModule(MODULES.prompt)
+            ]);
+
+            // 创建模块上下文
+            const moduleContext = {
+                state,
+                STORAGE_KEYS,
+                DEFAULT_USER_CONFIG,
+                utils: {
+                    loadGlobalConfig: loadGlobalConfig.bind(this),
+                    saveUserConfig: saveUserConfig.bind(this),
+                    showPrompt: showPrompt.bind(this),
+                    closePrompt: closePrompt.bind(this),
+                    playTestAlarm: playTestAlarm.bind(this)
+                }
+            };
+
+            // 执行模块
+            new Function('context', configToolCode)(moduleContext);
+            new Function('context', getInfoCode)(moduleContext);
+            new Function('context', promptCode)(moduleContext);
+
+            // 启动配置检查定时器
+            startConfigChecker();
+
+            // 设置请求拦截
+            setupRequestInterception(moduleContext);
+
+            console.log('iLabel辅助工具: 初始化完成');
+
+        } catch (error) {
+            console.error('iLabel辅助工具: 初始化失败', error);
         }
     }
 
-    // 加载所有模块
-    function loadModules(index) {
-        if (index >= MODULES.length) {
-            console.log('所有模块加载完成，初始化完成');
+    // 加载用户配置
+    function loadUserConfig() {
+        const saved = GM_getValue(STORAGE_KEYS.USER_CONFIG, null);
+        if (saved) {
+            try {
+                state.userConfig = JSON.parse(saved);
+            } catch (e) {
+                console.error('解析用户配置失败，使用默认配置', e);
+                state.userConfig = { ...DEFAULT_USER_CONFIG };
+            }
+        } else {
+            state.userConfig = { ...DEFAULT_USER_CONFIG };
+        }
+    }
 
-            // 触发所有模块加载完成事件
+    // 保存用户配置
+    function saveUserConfig() {
+        GM_setValue(STORAGE_KEYS.USER_CONFIG, JSON.stringify(state.userConfig));
+    }
+
+    // 加载全局配置
+    async function loadGlobalConfig(force = false) {
+        const now = Date.now();
+        const lastUpdate = GM_getValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, 0);
+
+        // 检查是否需要更新（24小时 = 86400000毫秒）
+        if (!force && now - lastUpdate < 86400000) {
+            const saved = GM_getValue(STORAGE_KEYS.GLOBAL_CONFIG, null);
+            if (saved) {
+                try {
+                    state.globalConfig = JSON.parse(saved);
+                    console.log('使用缓存的全局配置');
+                    return;
+                } catch (e) {
+                    console.error('解析缓存的全局配置失败', e);
+                }
+            }
+        }
+
+        try {
+            const configText = await loadModule(MODULES.config);
+            const config = JSON.parse(configText);
+
+            // 只保存globalConfig部分
+            if (config.globalConfig) {
+                state.globalConfig = config.globalConfig;
+                GM_setValue(STORAGE_KEYS.GLOBAL_CONFIG, JSON.stringify(config.globalConfig));
+                GM_setValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, now);
+                console.log('全局配置更新成功');
+            } else {
+                throw new Error('配置文件格式错误');
+            }
+        } catch (error) {
+            console.error('加载全局配置失败', error);
+            // 尝试使用缓存的配置
+            const cached = GM_getValue(STORAGE_KEYS.GLOBAL_CONFIG, null);
+            if (cached) {
+                try {
+                    state.globalConfig = JSON.parse(cached);
+                    console.log('使用缓存的全局配置（加载失败后）');
+                } catch (e) {
+                    console.error('解析缓存的全局配置失败', e);
+                }
+            }
+        }
+    }
+
+    // 注册菜单命令
+    function registerMenuCommands() {
+        GM_registerMenuCommand('⚙️ 打开配置工具', () => {
+            if (state.configToolInstance && typeof state.configToolInstance.open === 'function') {
+                state.configToolInstance.open();
+            }
+        });
+
+        GM_registerMenuCommand('🔄 立即更新远程配置', async () => {
+            await loadGlobalConfig(true);
+            alert('全局配置更新完成');
+        });
+
+        GM_registerMenuCommand('🔊 测试闹钟', () => {
+            playTestAlarm();
+        });
+    }
+
+    // 启动配置检查器
+    function startConfigChecker() {
+        setInterval(async () => {
+            const now = Date.now();
+            const lastUpdate = GM_getValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, 0);
+
+            if (now - lastUpdate > 86400000) {
+                console.log('触发定时配置检查');
+                await loadGlobalConfig();
+            }
+        }, 3600000); // 每小时检查一次
+    }
+
+    // 播放测试闹钟
+    function playTestAlarm() {
+        try {
+            if (!state.audioContext) {
+                state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            if (state.audioContext.state === 'suspended') {
+                state.audioContext.resume();
+            }
+
+            // 创建一个简单的振荡器作为测试音
+            const oscillator = state.audioContext.createOscillator();
+            const gainNode = state.audioContext.createGain();
+
+            oscillator.type = 'sine';
+            oscillator.frequency.value = 880;
+            gainNode.gain.value = 0.1;
+
+            oscillator.connect(gainNode);
+            gainNode.connect(state.audioContext.destination);
+
+            oscillator.start();
+            oscillator.stop(state.audioContext.currentTime + 3);
+
+            console.log('测试闹钟播放中（3秒）');
+
             setTimeout(() => {
-                window.dispatchEvent(new CustomEvent('ilabel:allModulesLoaded'));
-            }, 100);
+                console.log('测试闹钟播放结束');
+            }, 3000);
 
+        } catch (error) {
+            console.error('播放测试闹钟失败', error);
+        }
+    }
+
+    // 显示提示
+    function showPrompt(liveData, types) {
+        if (state.promptInstance && typeof state.promptInstance.show === 'function') {
+            state.promptInstance.show(liveData, types);
+        }
+    }
+
+    // 关闭提示
+    function closePrompt() {
+        if (state.promptInstance && typeof state.promptInstance.close === 'function') {
+            state.promptInstance.close();
+        }
+    }
+
+    // 设置请求拦截
+    function setupRequestInterception(context) {
+        // 拦截fetch请求
+        const originalFetch = window.fetch;
+        window.fetch = function (...args) {
+            const url = args[0];
+
+            if (typeof url === 'string') {
+                // 监听直播信息请求
+                if (url.includes('get_live_info_batch')) {
+                    return originalFetch.apply(this, args).then(response => {
+                        if (response.ok) {
+                            response.clone().json().then(data => {
+                                if (data.ret === 0 && data.liveInfoList?.length > 0) {
+                                    handleLiveInfo(data.liveInfoList[0], context);
+                                }
+                            }).catch(() => { });
+                        }
+                        return response;
+                    });
+                }
+
+                // 监听审核提交请求
+                if (url.includes('/api/answers') && args[1]?.method === 'POST') {
+                    return originalFetch.apply(this, args).then(response => {
+                        if (response.ok) {
+                            response.clone().json().then(data => {
+                                if (data.status === 'ok') {
+                                    handleAnswerSubmit(args[1]?.body, data, context);
+                                }
+                            }).catch(() => { });
+                        }
+                        return response;
+                    });
+                }
+            }
+
+            return originalFetch.apply(this, args);
+        };
+
+        // 拦截XHR请求
+        const originalOpen = XMLHttpRequest.prototype.open;
+        const originalSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function (method, url) {
+            this._method = method.toUpperCase();
+            this._url = url;
+            return originalOpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function (body) {
+            const xhr = this;
+
+            if (xhr._url && xhr._url.includes('get_live_info_batch')) {
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+                            if (data.ret === 0 && data.liveInfoList?.length > 0) {
+                                handleLiveInfo(data.liveInfoList[0], context);
+                            }
+                        } catch (e) { }
+                    }
+                });
+            }
+
+            if (xhr._method === 'POST' && xhr._url && xhr._url.includes('/api/answers')) {
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 200) {
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+                            if (data.status === 'ok') {
+                                handleAnswerSubmit(body, data, context);
+                            }
+                        } catch (e) { }
+                    }
+                });
+            }
+
+            return originalSend.call(this, body);
+        };
+    }
+
+    // 处理直播信息
+    async function handleLiveInfo(liveInfo, context) {
+        try {
+            // 获取审核人员信息
+            const auditor = await getAuditorInfo();
+
+            // 获取送审信息
+            const auditInfo = await getAuditInfo();
+
+            const liveData = {
+                liveId: liveInfo.liveId || '',
+                anchorUserId: liveInfo.anchorUserId || '',
+                nickname: liveInfo.nickname || '',
+                authStatus: liveInfo.authStatus || '',
+                signature: liveInfo.signature || '',
+                description: liveInfo.description || '',
+                createLiveArea: liveInfo.extraField?.createLiveArea || '',
+                poiName: liveInfo.poiName || '',
+                streamStartTime: liveInfo.streamStartTime || '',
+                auditTime: auditInfo.audit_time || 0,
+                auditor: auditor,
+                auditRemark: auditInfo.auditRemark || ''
+            };
+
+            context.state.currentLiveData = liveData;
+
+            // 判断所有类型
+            const types = checkAllTypes(liveData, context);
+            context.state.currentTypes = types;
+
+            // 根据用户配置过滤
+            const filteredTypes = types.filter(type =>
+                context.state.userConfig.promptType.includes(type)
+            );
+
+            // 显示提示
+            if (filteredTypes.length > 0 || context.state.userConfig.alarmRing) {
+                context.utils.showPrompt(liveData, filteredTypes);
+            }
+
+        } catch (error) {
+            console.error('处理直播信息失败', error);
+        }
+    }
+
+    // 处理答案提交
+    function handleAnswerSubmit(body, responseData, context) {
+        try {
+            const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
+
+            if (!parsedBody.results) return;
+
+            Object.values(parsedBody.results).forEach(result => {
+                if (!result) return;
+
+                const taskId = result.task_id || '';
+                const liveId = result.live_id || '';
+
+                let operator = '未知操作人';
+                if (result.oper_name && result.oper_name.includes('-')) {
+                    operator = result.oper_name.split('-').pop().trim();
+                } else if (result.oper_name) {
+                    operator = result.oper_name.trim();
+                }
+
+                let conclusion = '不处罚';
+                let reasonLabel = null;
+                let remark = null;
+
+                if (result.finder_object && Array.isArray(result.finder_object)) {
+                    for (const item of result.finder_object) {
+                        if (item.ext_info && item.ext_info.reason_label) {
+                            reasonLabel = item.ext_info.reason_label;
+                            remark = item.remark || null;
+                            break;
+                        }
+                    }
+                }
+
+                if (reasonLabel) {
+                    conclusion = remark ? `${reasonLabel}（${remark}）` : reasonLabel;
+                }
+
+                const auditData = {
+                    task_id: taskId,
+                    live_id: liveId,
+                    conclusion: conclusion,
+                    operator: operator
+                };
+
+                console.log('审核结果:', auditData);
+
+                // 推送答案
+                sendAnswerPush(auditData, context);
+            });
+
+        } catch (error) {
+            console.error('处理答案提交失败', error);
+        }
+    }
+
+    // 判断所有类型
+    function checkAllTypes(liveData, context) {
+        const types = [];
+        const config = context.state.globalConfig;
+
+        if (!config) return types;
+
+        // 1. 预埋单检查
+        if (isPrefilledOrder(liveData)) {
+            types.push('prefilled');
+        }
+
+        // 2. 豁免检查
+        if (isExempted(liveData, config)) {
+            types.push('exempted');
+        }
+
+        // 3. 复核单检查
+        if (liveData.auditRemark && liveData.auditRemark.includes('复核')) {
+            types.push('review');
+        }
+
+        // 4. 点杀单检查
+        if (liveData.auditRemark && liveData.auditRemark.includes('辛苦注意审核')) {
+            types.push('targeted');
+        }
+
+        // 5. 处罚检查
+        const penaltyResult = checkPenalty(liveData, config);
+        if (penaltyResult.found) {
+            types.push('penalty');
+        }
+
+        // 6. 送审备注检查
+        if (liveData.auditRemark && liveData.auditRemark.includes('辛苦审核')) {
+            types.push('note');
+        }
+
+        // 7. 投诉检查
+        if (liveData.auditRemark && liveData.auditRemark.includes('投诉')) {
+            types.push('complaint');
+        }
+
+        // 8. 普通单（如果没有其他类型）
+        if (types.length === 0) {
+            types.push('normal');
+        }
+
+        return types;
+    }
+
+    // 检查是否为预埋单
+    function isPrefilledOrder(data) {
+        if (!data.auditTime) return false;
+
+        const auditDate = new Date(parseInt(data.auditTime) * 1000);
+        const now = new Date();
+
+        return auditDate.getDate() !== now.getDate() ||
+            auditDate.getMonth() !== now.getMonth() ||
+            auditDate.getFullYear() !== now.getFullYear();
+    }
+
+    // 检查是否豁免
+    function isExempted(data, config) {
+        const whiteList = config.anchorWhiteList || {};
+
+        // 检查主播昵称白名单
+        if (data.nickname && whiteList.nicknameWhiteList) {
+            for (const keyword of whiteList.nicknameWhiteList) {
+                if (keyword && data.nickname.includes(keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        // 检查主播认证白名单
+        if (data.authStatus && whiteList.authStatusWhiteList) {
+            for (const keyword of whiteList.authStatusWhiteList) {
+                if (keyword && data.authStatus.includes(keyword)) {
+                    return true;
+                }
+            }
+        }
+
+        // 检查主播ID白名单
+        if (data.anchorUserId && whiteList.anchorUserIdWhiteList) {
+            if (whiteList.anchorUserIdWhiteList.includes(data.anchorUserId)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // 检查处罚关键词
+    function checkPenalty(data, config) {
+        const keywords = config.penaltyKeywords || [];
+
+        const checkOrder = [
+            { field: 'description', label: '直播间描述' },
+            { field: 'nickname', label: '主播昵称' },
+            { field: 'poiName', label: '开播位置' }
+        ];
+
+        for (const check of checkOrder) {
+            const fieldValue = data[check.field] || '';
+            for (const keyword of keywords) {
+                if (fieldValue.includes(keyword)) {
+                    return {
+                        found: true,
+                        location: check.label,
+                        keyword: keyword
+                    };
+                }
+            }
+        }
+
+        return { found: false };
+    }
+
+    // 获取审核人员信息
+    async function getAuditorInfo() {
+        try {
+            const response = await fetch('https://ilabel.weixin.qq.com/api/user/info', {
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'x-requested-with': 'XMLHttpRequest'
+                },
+                credentials: 'include'
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data.status === 'ok' && data.data?.name) {
+                    const nameParts = data.data.name.split('-');
+                    return nameParts.length > 1 ? nameParts[1].trim() : data.data.name.trim();
+                }
+            }
+        } catch (e) {
+            console.error('获取审核人员信息失败', e);
+        }
+        return '';
+    }
+
+    // 获取送审信息
+    async function getAuditInfo() {
+        try {
+            const response = await fetch('https://ilabel.weixin.qq.com/api/mixed-task/assigned?task_id=10', {
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'x-requested-with': 'XMLHttpRequest'
+                },
+                credentials: 'include'
+            });
+
+            if (!response.ok) {
+                return { audit_time: 0, auditRemark: '' };
+            }
+
+            const data = await response.json();
+
+            if (data.status === 'ok' && data.data?.hits?.length > 0) {
+                const hit = data.data.hits[0];
+                const content = hit.content_data?.content;
+
+                if (!content) {
+                    return { audit_time: 0, auditRemark: '' };
+                }
+
+                const audit_time = content.audit_time || 0;
+                const rawRemark = content.send_remark || '';
+                const auditRemark = decodeUnicode(rawRemark);
+
+                return { audit_time, auditRemark };
+            }
+        } catch (e) {
+            console.error('获取送审信息失败', e);
+        }
+        return { audit_time: 0, auditRemark: '' };
+    }
+
+    // Unicode解码
+    function decodeUnicode(str) {
+        if (!str) return '';
+        try {
+            return str.replace(/\\u([\dA-F]{4})/gi,
+                (match, group) => String.fromCharCode(parseInt(group, 16)));
+        } catch (e) {
+            return str;
+        }
+    }
+
+    // 推送答案
+    function sendAnswerPush(auditData, context) {
+        const pushUrl = context.state.globalConfig?.pushUrl?.answerPushUrl;
+
+        if (!pushUrl) {
+            console.error('答案推送地址未配置');
             return;
         }
 
-        const module = MODULES[index];
-        const moduleUrl = `https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/${module.url}`;
+        const timeStr = formatTime24();
+        const content = `审核提交记录\n时间: ${timeStr}\ntask_id: ${auditData.task_id}\nlive_id: ${auditData.live_id}\n结论: ${auditData.conclusion}\n操作人: ${auditData.operator}`;
 
-        console.log(`正在加载模块: ${module.name} (${index + 1}/${MODULES.length})`);
-
-        // 使用GM_xmlhttpRequest或普通的fetch
-        const requestFn = gmFunctions.xmlhttpRequest || function (options) {
-            // 降级使用fetch
-            fetch(options.url, {
-                method: options.method || 'GET',
-                headers: options.headers || {}
-            })
-                .then(response => {
-                    if (response.ok) {
-                        return response.text();
-                    }
-                    throw new Error('HTTP ' + response.status);
-                })
-                .then(text => {
-                    if (options.onload) {
-                        options.onload({ status: 200, responseText: text });
-                    }
-                })
-                .catch(error => {
-                    if (options.onerror) {
-                        options.onerror(error);
-                    }
-                });
+        const data = {
+            msgtype: "text",
+            text: {
+                content: content
+            }
         };
 
-        requestFn({
-            method: 'GET',
-            url: moduleUrl + '?t=' + Date.now(),
-            timeout: 10000,
+        console.log('发送答案推送:', data);
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: pushUrl,
             headers: {
-                'Cache-Control': 'no-cache'
+                'Content-Type': 'application/json'
             },
+            data: JSON.stringify(data),
+            timeout: 5000,
             onload: function (response) {
                 if (response.status === 200) {
-                    try {
-                        // 执行模块代码，传入iLabel对象
-                        new Function('iLabel', response.responseText)(window.iLabel);
-                        console.log(`✓ 模块加载成功: ${module.name}`);
-
-                        // 加载下一个模块
-                        setTimeout(() => loadModules(index + 1), 50);
-                    } catch (e) {
-                        console.error(`✗ 模块执行失败 ${module.name}:`, e);
-                        console.error('错误详情:', e.message);
-                        // 继续加载下一个
-                        setTimeout(() => loadModules(index + 1), 50);
-                    }
+                    console.log('答案推送成功');
                 } else {
-                    console.error(`✗ 模块加载失败 ${module.name}，状态码:`, response.status);
-                    setTimeout(() => loadModules(index + 1), 50);
+                    console.error('答案推送失败:', response.status);
                 }
             },
             onerror: function (error) {
-                console.error(`✗ 模块加载网络错误 ${module.name}:`, error);
-                setTimeout(() => loadModules(index + 1), 50);
-            },
-            ontimeout: function () {
-                console.error(`✗ 模块加载超时 ${module.name}`);
-                setTimeout(() => loadModules(index + 1), 50);
+                console.error('答案推送错误:', error);
             }
         });
     }
 
-    // 先加载样式，再加载模块
-    try {
-        loadStyles();
-        loadModules(0);
-    } catch (e) {
-        console.error('初始化失败:', e);
+    // 格式化时间
+    function formatTime24() {
+        const now = new Date();
+        return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
     }
+
+    // 启动
+    init();
 })();
