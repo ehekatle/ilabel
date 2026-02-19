@@ -7,8 +7,8 @@
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.user.js
 // @supportURL   https://github.com/ehekatle/ilabel/issues
-// @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.meta.js
-// @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.user.js
+// @updateURL    https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.meta.js
+// @downloadURL  https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.user.js
 // @match        https://ilabel.weixin.qq.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=weixin.qq.com
 // @grant        GM_xmlhttpRequest
@@ -20,13 +20,13 @@
 // @run-at       document-start
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     // 全局变量
     const SWITCH_KEY = 'ilabel_reminder_enabled';
-    const REMOTE_SCRIPT_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.js';
-    const ALARM_AUDIO_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
+    const REMOTE_SCRIPT_URL = 'https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilableScript.js';
+    const ALARM_AUDIO_URL = 'https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
 
     // 本地版本号
     const LOCAL_VERSION = GM_info.script.version;
@@ -320,11 +320,11 @@
                 // 预加载
                 alarmAudio.load();
 
-                alarmAudio.addEventListener('canplaythrough', function() {
+                alarmAudio.addEventListener('canplaythrough', function () {
                     console.log('缓存的音频预加载完成');
                 });
 
-                alarmAudio.addEventListener('error', function(e) {
+                alarmAudio.addEventListener('error', function (e) {
                     console.error('缓存的音频加载失败:', e);
                     // 缓存失败，从网络加载
                     loadAudioFromNetwork();
@@ -349,7 +349,7 @@
             url: ALARM_AUDIO_URL + '?t=' + Date.now(),
             responseType: 'arraybuffer',
             timeout: 15000,
-            onload: function(response) {
+            onload: function (response) {
                 if (response.status === 200) {
                     try {
                         // 创建Blob
@@ -367,7 +367,7 @@
 
                         // 缓存音频数据
                         const reader = new FileReader();
-                        reader.onloadend = function() {
+                        reader.onloadend = function () {
                             const base64data = reader.result.split(',')[1];
                             if (base64data) {
                                 GM_setValue('ilabel_alarm_audio_data', base64data);
@@ -377,11 +377,11 @@
                         };
                         reader.readAsDataURL(blob);
 
-                        alarmAudio.addEventListener('canplaythrough', function() {
+                        alarmAudio.addEventListener('canplaythrough', function () {
                             console.log('网络音频预加载完成');
                         });
 
-                        alarmAudio.addEventListener('error', function(e) {
+                        alarmAudio.addEventListener('error', function (e) {
                             console.error('网络音频加载失败:', e);
                         });
 
@@ -392,10 +392,10 @@
                     console.error('音频下载失败，状态码:', response.status);
                 }
             },
-            onerror: function(error) {
+            onerror: function (error) {
                 console.error('音频下载网络错误:', error);
             },
-            ontimeout: function() {
+            ontimeout: function () {
                 console.error('音频下载超时');
             }
         });
@@ -463,7 +463,7 @@
         GM_xmlhttpRequest({
             method: 'GET',
             url: REMOTE_SCRIPT_URL + '?t=' + Date.now(),
-            onload: function(response) {
+            onload: function (response) {
                 if (response.status === 200) {
                     try {
                         parseRemoteScript(response.responseText);
@@ -476,7 +476,7 @@
                     showError('远程脚本加载失败，状态码: ' + response.status);
                 }
             },
-            onerror: function(error) {
+            onerror: function (error) {
                 console.error('远程脚本加载网络错误:', error);
                 showError('远程脚本加载网络错误');
             }
@@ -634,7 +634,7 @@
         const pushSlider = document.createElement('span');
         pushSlider.className = 'push-switch-slider';
 
-        pushCheckbox.addEventListener('change', function() {
+        pushCheckbox.addEventListener('change', function () {
             GM_setValue(SWITCH_KEY, this.checked);
             updateVersionTooltip();
             console.log('推送提醒状态:', this.checked ? '开启' : '关闭');
@@ -682,7 +682,7 @@
         const alarmSlider = document.createElement('span');
         alarmSlider.className = 'alarm-switch-slider';
 
-        alarmCheckbox.addEventListener('change', function() {
+        alarmCheckbox.addEventListener('change', function () {
             const isChecked = this.checked;
             console.log('闹钟提醒状态:', isChecked ? '开启' : '关闭');
 
@@ -751,7 +751,7 @@
     function setupRequestInterception() {
         const originalFetch = window.fetch;
         if (originalFetch) {
-            window.fetch = function(...args) {
+            window.fetch = function (...args) {
                 const url = args[0];
                 if (typeof url === 'string') {
                     // 监听直播信息请求
@@ -763,9 +763,9 @@
                                     if (data.ret === 0 && data.liveInfoList?.length > 0) {
                                         processLiveInfo(data.liveInfoList[0]);
                                     }
-                                }).catch(() => {});
+                                }).catch(() => { });
                             }
-                        }).catch(() => {});
+                        }).catch(() => { });
                         return fetchPromise;
                     }
                     // 监听审核提交请求
@@ -788,13 +788,13 @@
         const originalOpen = XMLHttpRequest.prototype.open;
         const originalSend = XMLHttpRequest.prototype.send;
 
-        XMLHttpRequest.prototype.open = function(method, url) {
+        XMLHttpRequest.prototype.open = function (method, url) {
             this._method = method.toUpperCase();
             this._url = url;
             return originalOpen.apply(this, arguments);
         };
 
-        XMLHttpRequest.prototype.send = function(body) {
+        XMLHttpRequest.prototype.send = function (body) {
             const xhr = this;
 
             // 监听直播信息请求
@@ -806,7 +806,7 @@
                             if (data.ret === 0 && data.liveInfoList?.length > 0) {
                                 processLiveInfo(data.liveInfoList[0]);
                             }
-                        } catch (e) {}
+                        } catch (e) { }
                     }
                 });
             }
@@ -956,14 +956,14 @@
             },
             data: JSON.stringify(data),
             timeout: 5000,
-            onload: function(response) {
+            onload: function (response) {
                 if (response.status === 200) {
                     console.log('审核结果推送成功');
                 } else {
                     console.error('审核结果推送失败:', response.status, response.responseText);
                 }
             },
-            onerror: function(error) {
+            onerror: function (error) {
                 console.error('审核结果推送错误:', error);
             }
         });
@@ -1165,7 +1165,7 @@
         content.innerHTML = contentHTML;
 
         // 添加复制函数
-        content.querySelector('.ilabel-copy-liveid').copyLiveID = function(liveid) {
+        content.querySelector('.ilabel-copy-liveid').copyLiveID = function (liveid) {
             navigator.clipboard.writeText(liveid).then(() => {
                 const originalText = this.textContent;
                 this.textContent = '已复制!';
@@ -1209,7 +1209,7 @@
         confirmBtn.style.color = 'white';
 
         // 确认按钮点击处理函数
-        const confirmHandler = function() {
+        const confirmHandler = function () {
             popup.remove();
             popupConfirmed = true;
             lastPopupTime = null;
@@ -1233,7 +1233,7 @@
         confirmBtn.onclick = confirmHandler;
 
         // 键盘事件处理函数
-        const keydownHandler = function(e) {
+        const keydownHandler = function (e) {
             // 按下空格键且弹窗存在
             if (e.code === 'Space' && document.getElementById('ilabel-alert-popup')) {
                 e.preventDefault(); // 防止页面滚动
@@ -1387,7 +1387,7 @@
         }
 
         const mentionedMobile = config.auditorMobileMap &&
-                                config.auditorMobileMap[auditorName];
+            config.auditorMobileMap[auditorName];
 
         const timeStr = formatTime24();
         const judgmentText = getInitialJudgmentText();
@@ -1415,14 +1415,14 @@
             },
             data: JSON.stringify(data),
             timeout: 5000,
-            onload: function(response) {
+            onload: function (response) {
                 if (response.status === 200) {
                     console.log('企业微信通知发送成功');
                 } else {
                     console.error('企业微信通知发送失败:', response.status, response.responseText);
                 }
             },
-            onerror: function(error) {
+            onerror: function (error) {
                 console.error('企业微信通知发送错误:', error);
             }
         });

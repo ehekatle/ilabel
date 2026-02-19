@@ -6,8 +6,8 @@
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
-// @updateURL    https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
-// @downloadURL  https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
+// @updateURL    https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
+// @downloadURL  https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
 // @match        https://ilabel.weixin.qq.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=weixin.qq.com
 // @grant        GM_xmlhttpRequest
@@ -39,8 +39,8 @@
     };
 
     // ========== 配置 ==========
-    const CONFIG_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/config.json';
-    const ALARM_AUDIO_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
+    const CONFIG_URL = 'https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/config.json';
+    const ALARM_AUDIO_URL = 'https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
 
     const STORAGE_KEYS = {
         GLOBAL_CONFIG: 'ilabel_global_config',
@@ -1368,7 +1368,7 @@
         const penaltyResult = checkPenalty(liveData, config);
         if (penaltyResult.found) types.push('penalty');
 
-        if (liveData.auditRemark?.includes('辛苦审核')) types.push('note');
+        if (liveData.auditRemark?.includes('辛苦核实')) types.push('note');
         if (liveData.auditRemark?.includes('投诉')) types.push('complaint');
 
         if (types.length === 0) types.push('normal');
