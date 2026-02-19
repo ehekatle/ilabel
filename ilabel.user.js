@@ -25,12 +25,26 @@
 (function () {
     'use strict';
 
+    // 可选：屏蔽WebSocket相关错误
+    const originalConsoleError = console.error;
+    console.error = function (...args) {
+        if (args[0] && typeof args[0] === 'string' &&
+            (args[0].includes('WebSocket') || args[0].includes('ws://') || args[0].includes('wss://'))) {
+            return;
+        }
+        originalConsoleError.apply(console, args);
+    };
+
     // ========== 配置 ==========
     const CONFIG_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/config.json';
+    const ALARM_AUDIO_URL = 'https://gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
+
     const STORAGE_KEYS = {
         GLOBAL_CONFIG: 'ilabel_global_config',
         USER_CONFIG: 'ilabel_user_config',
-        LAST_CONFIG_UPDATE: 'ilabel_last_config_update'
+        LAST_CONFIG_UPDATE: 'ilabel_last_config_update',
+        ALARM_AUDIO_DATA: 'ilabel_alarm_audio_data',
+        ALARM_AUDIO_TIMESTAMP: 'ilabel_alarm_audio_timestamp'
     };
 
     // 默认用户配置
@@ -38,6 +52,7 @@
         promptType: ['targeted', 'prefilled', 'exempted', 'review', 'penalty', 'note', 'complaint', 'normal'],
         promptArrange: 'horizontal',
         promptSize: 100,
+        promptOpacity: 100,
         promptPosition: { x: 100, y: 100 },
         alarmRing: false
     };
@@ -54,6 +69,18 @@
         normal: '普通'
     };
 
+    // 类型颜色映射
+    const TYPE_COLORS = {
+        targeted: '#000000',
+        prefilled: '#f44336',
+        exempted: '#4caf50',
+        review: '#2196f3',
+        note: '#90caf9',
+        penalty: '#ff9800',
+        complaint: '#9e9e9e',
+        normal: '#ffffff'
+    };
+
     // ========== 全局状态 ==========
     const state = {
         globalConfig: null,
@@ -64,11 +91,15 @@
         pushInterval: null,
         lastPushTime: 0,
         isConfirmed: false,
-        audioContext: null,
+        alarmAudio: null,
+        isAlarmPlaying: false,
+        alarmCheckInterval: null,
         configToolVisible: false,
-        vueApp: null,
         toolContainer: null,
-        overlay: null
+        overlay: null,
+        lastPopupTime: null,
+        popupConfirmed: true,
+        spaceHandler: null
     };
 
     // ========== 初始化 ==========
@@ -82,11 +113,16 @@
             // 加载全局配置
             await loadGlobalConfig();
 
+            // 预加载闹钟音频
+            preloadAlarmAudio();
+
             // 添加样式
             addStyles();
 
             // 注册菜单命令
-            registerMenuCommands();
+            GM_registerMenuCommand('⚙️ 打开配置工具', () => {
+                toggleConfigTool();
+            });
 
             // 设置请求拦截
             setupRequestInterception();
@@ -107,7 +143,6 @@
             const saved = GM_getValue(STORAGE_KEYS.USER_CONFIG, null);
             if (saved) {
                 state.userConfig = JSON.parse(saved);
-                // 确保所有字段都存在
                 state.userConfig = { ...DEFAULT_USER_CONFIG, ...state.userConfig };
             } else {
                 state.userConfig = { ...DEFAULT_USER_CONFIG };
@@ -195,20 +230,174 @@
         }, 3600000);
     }
 
-    // ========== 菜单命令 ==========
-    function registerMenuCommands() {
-        GM_registerMenuCommand('⚙️ 打开配置工具', () => {
-            toggleConfigTool();
-        });
+    // ========== 闹钟音频预加载 ==========
+    function preloadAlarmAudio() {
+        console.log('预加载闹钟音频...');
 
-        GM_registerMenuCommand('🔄 立即更新远程配置', async () => {
-            await loadGlobalConfig(true);
-            alert('全局配置更新完成');
-        });
+        const cachedAudioData = GM_getValue(STORAGE_KEYS.ALARM_AUDIO_DATA, null);
+        const cachedTimestamp = GM_getValue(STORAGE_KEYS.ALARM_AUDIO_TIMESTAMP, 0);
+        const cacheExpiry = 24 * 60 * 60 * 1000;
 
-        GM_registerMenuCommand('🔊 测试闹钟', () => {
-            playTestAlarm();
+        if (cachedAudioData && (Date.now() - cachedTimestamp) < cacheExpiry) {
+            try {
+                const byteCharacters = atob(cachedAudioData);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], { type: 'audio/mpeg' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                state.alarmAudio = new Audio();
+                state.alarmAudio.src = blobUrl;
+                state.alarmAudio.loop = true;
+                state.alarmAudio.volume = 0.4;
+                state.alarmAudio.load();
+
+                console.log('缓存音频加载完成');
+                return;
+            } catch (e) {
+                console.error('缓存音频处理失败', e);
+            }
+        }
+
+        loadAlarmAudioFromNetwork();
+    }
+
+    function loadAlarmAudioFromNetwork() {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: ALARM_AUDIO_URL + '?t=' + Date.now(),
+            responseType: 'arraybuffer',
+            timeout: 15000,
+            onload: function (response) {
+                if (response.status === 200) {
+                    try {
+                        const blob = new Blob([response.response], { type: 'audio/mpeg' });
+                        const blobUrl = URL.createObjectURL(blob);
+
+                        state.alarmAudio = new Audio();
+                        state.alarmAudio.src = blobUrl;
+                        state.alarmAudio.loop = true;
+                        state.alarmAudio.volume = 0.4;
+                        state.alarmAudio.load();
+
+                        const reader = new FileReader();
+                        reader.onloadend = function () {
+                            const base64data = reader.result.split(',')[1];
+                            if (base64data) {
+                                GM_setValue(STORAGE_KEYS.ALARM_AUDIO_DATA, base64data);
+                                GM_setValue(STORAGE_KEYS.ALARM_AUDIO_TIMESTAMP, Date.now());
+                            }
+                        };
+                        reader.readAsDataURL(blob);
+
+                        console.log('网络音频加载完成');
+                    } catch (e) {
+                        console.error('处理音频数据失败', e);
+                    }
+                } else {
+                    console.error('音频下载失败');
+                }
+            },
+            onerror: function (error) {
+                console.error('音频下载网络错误', error);
+            }
         });
+    }
+
+    // ========== 闹钟控制 ==========
+    function playAlarm() {
+        if (!state.userConfig.alarmRing || state.isConfirmed) return;
+
+        try {
+            if (!state.alarmAudio) {
+                console.warn('音频对象未初始化');
+                state.alarmAudio = new Audio(ALARM_AUDIO_URL + '?t=' + Date.now());
+                state.alarmAudio.loop = true;
+                state.alarmAudio.volume = 0.4;
+            }
+
+            if (state.isAlarmPlaying) return;
+
+            state.alarmAudio.loop = true;
+            state.alarmAudio.currentTime = 0;
+
+            const playPromise = state.alarmAudio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    state.isAlarmPlaying = true;
+                    console.log('闹钟开始播放');
+                }).catch(error => {
+                    console.error('闹钟播放失败:', error);
+                    state.isAlarmPlaying = false;
+                });
+            }
+        } catch (e) {
+            console.error('播放闹钟异常:', e);
+            state.isAlarmPlaying = false;
+        }
+    }
+
+    function stopAlarm() {
+        if (state.alarmAudio && state.isAlarmPlaying) {
+            try {
+                state.alarmAudio.pause();
+                state.alarmAudio.currentTime = 0;
+                state.isAlarmPlaying = false;
+                console.log('闹钟已停止');
+            } catch (e) {
+                console.error('停止闹钟失败:', e);
+            }
+        }
+    }
+
+    function playTestAlarm() {
+        if (!state.userConfig.alarmRing) return;
+
+        try {
+            if (!state.alarmAudio) {
+                state.alarmAudio = new Audio(ALARM_AUDIO_URL + '?t=' + Date.now());
+                state.alarmAudio.loop = false;
+                state.alarmAudio.volume = 0.4;
+            }
+
+            state.alarmAudio.loop = false;
+            state.alarmAudio.currentTime = 0;
+
+            const playPromise = state.alarmAudio.play();
+            if (playPromise !== undefined) {
+                playPromise.then(() => {
+                    console.log('测试闹钟播放');
+                    setTimeout(() => {
+                        if (state.alarmAudio) {
+                            state.alarmAudio.pause();
+                            state.alarmAudio.currentTime = 0;
+                        }
+                    }, 3000);
+                }).catch(console.error);
+            }
+        } catch (e) {
+            console.error('播放测试闹钟失败', e);
+        }
+    }
+
+    function startAlarmCheck() {
+        if (state.alarmCheckInterval) {
+            clearInterval(state.alarmCheckInterval);
+        }
+
+        state.alarmCheckInterval = setInterval(() => {
+            const popupExists = !!document.getElementById('ilabel-prompt-container');
+            if (popupExists && !state.isConfirmed && state.userConfig.alarmRing && !state.isAlarmPlaying) {
+                playAlarm();
+            }
+
+            if (!popupExists || state.isConfirmed) {
+                stopAlarm();
+            }
+        }, 1000);
     }
 
     // ========== 配置工具 ==========
@@ -221,11 +410,11 @@
     }
 
     function openConfigTool() {
-        if (state.vueApp && state.toolContainer) {
-            updateVueData();
+        if (state.toolContainer) {
             state.toolContainer.style.display = 'block';
             state.overlay.style.display = 'block';
             state.configToolVisible = true;
+            updateConfigToolValues();
             return;
         }
         createConfigTool();
@@ -239,20 +428,38 @@
             state.overlay.style.display = 'none';
         }
         state.configToolVisible = false;
-        closePrompt();
     }
 
-    function updateVueData() {
-        if (state.vueApp) {
-            state.vueApp.selectedTypes = [...state.userConfig.promptType];
-            state.vueApp.arrange = state.userConfig.promptArrange;
-            state.vueApp.size = state.userConfig.promptSize;
-            state.vueApp.alarmRing = state.userConfig.alarmRing;
-        }
+    function updateConfigToolValues() {
+        if (!state.toolContainer) return;
+
+        const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
+        checkboxes.forEach(cb => {
+            cb.checked = state.userConfig.promptType.includes(cb.value);
+        });
+
+        const arrangeRadios = state.toolContainer.querySelectorAll('input[name="arrange"]');
+        arrangeRadios.forEach(radio => {
+            radio.checked = radio.value === state.userConfig.promptArrange;
+        });
+
+        const sizeSlider = state.toolContainer.querySelector('#size-slider');
+        const sizeInput = state.toolContainer.querySelector('#size-input');
+        if (sizeSlider) sizeSlider.value = state.userConfig.promptSize;
+        if (sizeInput) sizeInput.value = state.userConfig.promptSize;
+
+        const opacitySlider = state.toolContainer.querySelector('#opacity-slider');
+        const opacityInput = state.toolContainer.querySelector('#opacity-input');
+        if (opacitySlider) opacitySlider.value = state.userConfig.promptOpacity;
+        if (opacityInput) opacityInput.value = state.userConfig.promptOpacity;
+
+        const alarmSwitch = state.toolContainer.querySelector('#alarm-switch');
+        if (alarmSwitch) alarmSwitch.checked = state.userConfig.alarmRing;
+
+        updatePreview();
     }
 
     function createConfigTool() {
-        // 创建遮罩
         state.overlay = document.createElement('div');
         state.overlay.id = 'ilabel-config-overlay';
         state.overlay.style.cssText = `
@@ -268,7 +475,6 @@
         state.overlay.addEventListener('click', closeConfigTool);
         document.body.appendChild(state.overlay);
 
-        // 创建容器
         state.toolContainer = document.createElement('div');
         state.toolContainer.id = 'ilabel-config-tool';
         state.toolContainer.style.cssText = `
@@ -276,8 +482,8 @@
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 550px;
-            max-width: 90vw;
+            width: 750px;
+            max-width: 95vw;
             max-height: 90vh;
             overflow-y: auto;
             background: white;
@@ -287,219 +493,322 @@
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
             display: none;
         `;
+
+        state.toolContainer.innerHTML = buildConfigToolHTML();
         document.body.appendChild(state.toolContainer);
 
-        // 引入Vue
-        const vueScript = document.createElement('script');
-        vueScript.src = 'https://cdn.jsdelivr.net/npm/vue@2/dist/vue.js';
-        vueScript.onload = initVueApp;
-        vueScript.onerror = () => {
-            state.toolContainer.innerHTML = `
-                <div style="padding: 20px; text-align: center;">
-                    <h3 style="color: #f44336;">加载失败</h3>
-                    <p>Vue框架加载失败，请刷新页面重试。</p>
-                    <button onclick="document.getElementById('ilabel-config-tool').style.display='none'; document.getElementById('ilabel-config-overlay').style.display='none';" 
-                            style="padding: 8px 16px; background: #2196f3; color: white; border: none; border-radius: 4px; cursor: pointer;">
-                        关闭
-                    </button>
-                </div>
-            `;
-            state.toolContainer.style.display = 'block';
-            state.overlay.style.display = 'block';
-            state.configToolVisible = true;
-        };
-        document.head.appendChild(vueScript);
-    }
-
-    function initVueApp() {
-        const template = `
-            <div class="config-tool-container">
-                <div class="config-tool-header">
-                    <h3>iLabel辅助工具配置</h3>
-                    <button @click="closeTool" class="close-btn">×</button>
-                </div>
-                
-                <div class="config-tool-body">
-                    <div class="config-section">
-                        <label class="section-label">提示类型：</label>
-                        <div class="checkbox-group">
-                            <div v-for="(name, type) in typeNames" :key="type" class="checkbox-item">
-                                <input type="checkbox" :id="'type-' + type" :value="type" v-model="selectedTypes" @change="updatePromptPreview">
-                                <label :for="'type-' + type" :style="{ color: typeColors[type] }">{{ name }}</label>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="config-section">
-                        <label class="section-label">提示排列方式：</label>
-                        <div class="radio-group">
-                            <label><input type="radio" value="horizontal" v-model="arrange" @change="updatePromptPreview"> 横向</label>
-                            <label><input type="radio" value="vertical" v-model="arrange" @change="updatePromptPreview"> 纵向</label>
-                        </div>
-                    </div>
-                    
-                    <div class="config-section">
-                        <label class="section-label">提示缩放比例 ({{ size }}%)：</label>
-                        <div class="slider-container">
-                            <input type="range" min="20" max="200" step="5" v-model.number="size" @input="updatePromptPreview" class="slider-input">
-                            <input type="number" min="20" max="200" step="5" v-model.number="size" @change="updatePromptPreview" class="size-input">
-                        </div>
-                    </div>
-                    
-                    <div class="config-section">
-                        <label class="section-label">闹钟开关：</label>
-                        <div class="switch-container">
-                            <label class="switch">
-                                <input type="checkbox" v-model="alarmRing" @change="updatePromptPreview">
-                                <span class="slider"></span>
-                            </label>
-                            <button @click="playTestAlarm" class="test-btn" :disabled="!alarmRing">🔊 测试闹钟（3秒）</button>
-                        </div>
-                    </div>
-                    
-                    <div class="preview-section">
-                        <label class="section-label">实时预览：</label>
-                        <div class="preview-container">
-                            <div class="preview-wrapper" :class="{ 'vertical': arrange === 'vertical' }" :style="{ transform: 'scale(' + size/100 + ')' }">
-                                <div v-for="type in previewTypes" :key="type" class="preview-item" :style="{ backgroundColor: typeColors[type] }">
-                                    {{ typeNames[type] }}
-                                </div>
-                                <div class="preview-item confirm-btn">确认</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="config-tool-footer">
-                    <button @click="resetConfig" class="reset-btn">重置默认</button>
-                    <button @click="saveConfig" class="save-btn">保存配置</button>
-                    <button @click="updateRemoteConfig" class="update-btn">更新远程配置</button>
-                </div>
-            </div>
-        `;
-
-        // 添加样式
-        const style = document.createElement('style');
-        style.textContent = `
-            .config-tool-container { padding: 24px; }
-            .config-tool-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 2px solid #f0f0f0; }
-            .config-tool-header h3 { margin: 0; color: #333; font-size: 18px; }
-            .close-btn { background: none; border: none; font-size: 28px; cursor: pointer; color: #999; }
-            .close-btn:hover { color: #333; }
-            .config-section { margin-bottom: 25px; padding-bottom: 15px; border-bottom: 1px dashed #eee; }
-            .section-label { display: block; margin-bottom: 12px; font-weight: 600; color: #444; font-size: 14px; }
-            .checkbox-group { display: flex; flex-wrap: wrap; gap: 12px 20px; background: #f9f9f9; padding: 15px; border-radius: 8px; }
-            .checkbox-item { display: flex; align-items: center; gap: 6px; }
-            .radio-group { display: flex; gap: 20px; background: #f9f9f9; padding: 12px 15px; border-radius: 8px; }
-            .slider-container { display: flex; align-items: center; gap: 15px; background: #f9f9f9; padding: 12px 15px; border-radius: 8px; }
-            .slider-input { flex: 1; height: 6px; }
-            .size-input { width: 70px; padding: 8px; border: 1px solid #ddd; border-radius: 6px; text-align: center; }
-            .switch-container { display: flex; align-items: center; gap: 15px; background: #f9f9f9; padding: 12px 15px; border-radius: 8px; }
-            .switch { position: relative; display: inline-block; width: 52px; height: 26px; }
-            .switch input { opacity: 0; width: 0; height: 0; }
-            .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 26px; }
-            .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
-            input:checked + .slider { background-color: #4caf50; }
-            input:checked + .slider:before { transform: translateX(26px); }
-            .test-btn { padding: 8px 16px; background: #2196f3; color: white; border: none; border-radius: 6px; cursor: pointer; }
-            .test-btn:disabled { background: #ccc; cursor: not-allowed; }
-            .preview-section { margin-top: 20px; padding: 20px; background: #f5f5f5; border-radius: 10px; }
-            .preview-container { min-height: 100px; display: flex; align-items: center; background: white; border-radius: 8px; padding: 20px; }
-            .preview-wrapper { display: flex; gap: 10px; transform-origin: left center; }
-            .preview-wrapper.vertical { flex-direction: column; }
-            .preview-item { padding: 8px 16px; border-radius: 6px; color: white; font-size: 13px; font-weight: 500; white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-            .preview-item.confirm-btn { background-color: white; color: #333; border: 1px solid #ddd; }
-            .config-tool-footer { display: flex; justify-content: flex-end; gap: 12px; margin-top: 25px; padding-top: 15px; border-top: 2px solid #f0f0f0; }
-            .config-tool-footer button { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; }
-            .reset-btn { background: #ff9800; color: white; }
-            .save-btn { background: #4caf50; color: white; }
-            .update-btn { background: #2196f3; color: white; }
-        `;
-        document.head.appendChild(style);
-
-        // 类型颜色
-        const typeColors = {
-            targeted: '#000000',
-            prefilled: '#f44336',
-            exempted: '#4caf50',
-            review: '#2196f3',
-            note: '#90caf9',
-            penalty: '#ff9800',
-            complaint: '#9e9e9e',
-            normal: '#9e9e9e'
-        };
-
-        // 创建Vue实例
-        state.vueApp = new Vue({
-            el: '#ilabel-config-tool',
-            template,
-            data: {
-                typeNames: TYPE_NAMES,
-                typeColors: typeColors,
-                selectedTypes: [...state.userConfig.promptType],
-                arrange: state.userConfig.promptArrange,
-                size: state.userConfig.promptSize,
-                alarmRing: state.userConfig.alarmRing,
-                previewTypes: []
-            },
-            methods: {
-                closeTool() {
-                    closeConfigTool();
-                },
-                updatePromptPreview() {
-                    this.previewTypes = this.selectedTypes.slice(0, 3);
-                    if (this.previewTypes.length === 0) {
-                        this.previewTypes = ['normal'];
-                    }
-                    closePrompt();
-                    if (state.currentLiveData && state.currentTypes.length > 0) {
-                        setTimeout(() => {
-                            const filteredTypes = state.currentTypes.filter(type =>
-                                this.selectedTypes.includes(type)
-                            );
-                            if (filteredTypes.length > 0 || this.alarmRing) {
-                                showPrompt(state.currentLiveData, filteredTypes);
-                            }
-                        }, 100);
-                    }
-                },
-                playTestAlarm() {
-                    if (this.alarmRing) {
-                        playTestAlarm();
-                    }
-                },
-                saveConfig() {
-                    state.userConfig.promptType = this.selectedTypes;
-                    state.userConfig.promptArrange = this.arrange;
-                    state.userConfig.promptSize = this.size;
-                    state.userConfig.alarmRing = this.alarmRing;
-                    saveUserConfig();
-                    alert('配置已保存');
-                    this.closeTool();
-                },
-                resetConfig() {
-                    if (confirm('确定要恢复默认配置吗？')) {
-                        this.selectedTypes = [...DEFAULT_USER_CONFIG.promptType];
-                        this.arrange = DEFAULT_USER_CONFIG.promptArrange;
-                        this.size = DEFAULT_USER_CONFIG.promptSize;
-                        this.alarmRing = DEFAULT_USER_CONFIG.alarmRing;
-                        this.updatePromptPreview();
-                    }
-                },
-                async updateRemoteConfig() {
-                    await loadGlobalConfig(true);
-                    alert('远程配置更新成功');
-                    this.updatePromptPreview();
-                }
-            },
-            mounted() {
-                this.updatePromptPreview();
-            }
-        });
+        bindConfigToolEvents();
+        updatePreview();
 
         state.toolContainer.style.display = 'block';
         state.overlay.style.display = 'block';
         state.configToolVisible = true;
+    }
+
+    function buildConfigToolHTML() {
+        const selectedTypes = state.userConfig.promptType;
+
+        let typesHTML = '';
+        for (const [type, name] of Object.entries(TYPE_NAMES)) {
+            const checked = selectedTypes.includes(type) ? 'checked' : '';
+            typesHTML += `
+                <label class="checkbox-item">
+                    <input type="checkbox" class="type-checkbox" value="${type}" ${checked}>
+                    <span style="color: ${TYPE_COLORS[type]}">${name}</span>
+                </label>
+            `;
+        }
+
+        return `
+            <div class="config-tool-container">
+                <div class="config-tool-header">
+                    <h3>iLabel辅助工具配置</h3>
+                    <button class="close-btn" id="close-config-btn">×</button>
+                </div>
+
+                <div class="config-tool-body" style="display: flex; gap: 20px;">
+                    <!-- 左侧配置区 -->
+                    <div style="flex: 1;">
+                        <div class="config-section">
+                            <label class="section-label">提示类型：</label>
+                            <div class="checkbox-group" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+                                ${typesHTML}
+                            </div>
+                        </div>
+
+                        <div class="config-section" style="margin-top: 15px;">
+                            <label class="section-label">排列方式：</label>
+                            <div class="radio-group" style="display: flex; gap: 20px;">
+                                <label><input type="radio" name="arrange" value="horizontal" ${state.userConfig.promptArrange === 'horizontal' ? 'checked' : ''}> 横向</label>
+                                <label><input type="radio" name="arrange" value="vertical" ${state.userConfig.promptArrange === 'vertical' ? 'checked' : ''}> 纵向</label>
+                            </div>
+                        </div>
+
+                        <div class="config-section" style="margin-top: 15px;">
+                            <label class="section-label">缩放比例 <span id="size-value">${state.userConfig.promptSize}</span>%：</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="range" id="size-slider" min="20" max="200" step="5" value="${state.userConfig.promptSize}" style="flex: 1;">
+                                <input type="number" id="size-input" min="20" max="200" step="5" value="${state.userConfig.promptSize}" style="width: 60px; padding: 4px;">
+                            </div>
+                        </div>
+
+                        <div class="config-section" style="margin-top: 15px;">
+                            <label class="section-label">透明度 <span id="opacity-value">${state.userConfig.promptOpacity}</span>%：</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="range" id="opacity-slider" min="10" max="100" step="5" value="${state.userConfig.promptOpacity}" style="flex: 1;">
+                                <input type="number" id="opacity-input" min="10" max="100" step="5" value="${state.userConfig.promptOpacity}" style="width: 60px; padding: 4px;">
+                            </div>
+                        </div>
+
+                        <div class="config-section" style="margin-top: 15px;">
+                            <label class="section-label">闹钟提醒：</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <label class="switch">
+                                    <input type="checkbox" id="alarm-switch" ${state.userConfig.alarmRing ? 'checked' : ''}>
+                                    <span class="slider"></span>
+                                </label>
+                                <span id="alarm-status">${state.userConfig.alarmRing ? '开启' : '关闭'}</span>
+                                <button id="test-alarm-btn" class="test-btn" ${!state.userConfig.alarmRing ? 'disabled' : ''}>测试闹钟</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧预览区 -->
+                    <div style="width: 220px;">
+                        <div class="preview-section">
+                            <label class="section-label">预览：</label>
+                            <div class="preview-container" style="background: #f5f5f5; padding: 20px 10px; border-radius: 8px;">
+                                <div id="preview-wrapper" class="preview-wrapper ${state.userConfig.promptArrange}" style="justify-content: center; width: 200px;">
+                                    <!-- 预览内容动态生成 -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="config-tool-footer" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
+                    <button id="reset-config-btn" class="reset-btn">恢复默认</button>
+                    <button id="save-config-btn" class="save-btn">保存配置</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function bindConfigToolEvents() {
+        if (!state.toolContainer) return;
+
+        const closeBtn = state.toolContainer.querySelector('#close-config-btn');
+        if (closeBtn) closeBtn.addEventListener('click', closeConfigTool);
+
+        const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
+        checkboxes.forEach(cb => {
+            cb.addEventListener('change', updatePreview);
+        });
+
+        const arrangeRadios = state.toolContainer.querySelectorAll('input[name="arrange"]');
+        arrangeRadios.forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const wrapper = state.toolContainer.querySelector('#preview-wrapper');
+                if (wrapper) {
+                    if (e.target.value === 'vertical') {
+                        wrapper.classList.add('vertical');
+                    } else {
+                        wrapper.classList.remove('vertical');
+                    }
+                }
+                updatePreview();
+            });
+        });
+
+        const sizeSlider = state.toolContainer.querySelector('#size-slider');
+        const sizeInput = state.toolContainer.querySelector('#size-input');
+        const sizeValue = state.toolContainer.querySelector('#size-value');
+
+        if (sizeSlider) {
+            sizeSlider.addEventListener('input', (e) => {
+                const val = e.target.value;
+                if (sizeInput) sizeInput.value = val;
+                if (sizeValue) sizeValue.textContent = val;
+                updatePreview();
+            });
+        }
+
+        if (sizeInput) {
+            sizeInput.addEventListener('input', (e) => {
+                const val = e.target.value;
+                if (sizeSlider) sizeSlider.value = val;
+                if (sizeValue) sizeValue.textContent = val;
+                updatePreview();
+            });
+        }
+
+        const opacitySlider = state.toolContainer.querySelector('#opacity-slider');
+        const opacityInput = state.toolContainer.querySelector('#opacity-input');
+        const opacityValue = state.toolContainer.querySelector('#opacity-value');
+
+        if (opacitySlider) {
+            opacitySlider.addEventListener('input', (e) => {
+                const val = e.target.value;
+                if (opacityInput) opacityInput.value = val;
+                if (opacityValue) opacityValue.textContent = val;
+                updatePreview();
+            });
+        }
+
+        if (opacityInput) {
+            opacityInput.addEventListener('input', (e) => {
+                const val = e.target.value;
+                if (opacitySlider) opacitySlider.value = val;
+                if (opacityValue) opacityValue.textContent = val;
+                updatePreview();
+            });
+        }
+
+        const alarmSwitch = state.toolContainer.querySelector('#alarm-switch');
+        const alarmStatus = state.toolContainer.querySelector('#alarm-status');
+        const testBtn = state.toolContainer.querySelector('#test-alarm-btn');
+
+        if (alarmSwitch) {
+            alarmSwitch.addEventListener('change', (e) => {
+                const checked = e.target.checked;
+                if (alarmStatus) alarmStatus.textContent = checked ? '开启' : '关闭';
+                if (testBtn) testBtn.disabled = !checked;
+            });
+        }
+
+        if (testBtn) {
+            testBtn.addEventListener('click', playTestAlarm);
+        }
+
+        const resetBtn = state.toolContainer.querySelector('#reset-config-btn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => {
+                if (confirm('确定要恢复默认配置吗？')) {
+                    const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
+                    checkboxes.forEach(cb => {
+                        cb.checked = DEFAULT_USER_CONFIG.promptType.includes(cb.value);
+                    });
+
+                    const horizontalRadio = state.toolContainer.querySelector('input[value="horizontal"]');
+                    if (horizontalRadio) horizontalRadio.checked = true;
+
+                    if (sizeSlider) sizeSlider.value = DEFAULT_USER_CONFIG.promptSize;
+                    if (sizeInput) sizeInput.value = DEFAULT_USER_CONFIG.promptSize;
+                    if (sizeValue) sizeValue.textContent = DEFAULT_USER_CONFIG.promptSize;
+
+                    if (opacitySlider) opacitySlider.value = DEFAULT_USER_CONFIG.promptOpacity;
+                    if (opacityInput) opacityInput.value = DEFAULT_USER_CONFIG.promptOpacity;
+                    if (opacityValue) opacityValue.textContent = DEFAULT_USER_CONFIG.promptOpacity;
+
+                    if (alarmSwitch) {
+                        alarmSwitch.checked = DEFAULT_USER_CONFIG.alarmRing;
+                        if (alarmStatus) alarmStatus.textContent = DEFAULT_USER_CONFIG.alarmRing ? '开启' : '关闭';
+                        if (testBtn) testBtn.disabled = !DEFAULT_USER_CONFIG.alarmRing;
+                    }
+
+                    state.userConfig.promptPosition = { x: 100, y: 100 };
+
+                    updatePreview();
+                    showToast('已恢复默认配置', 'info');
+                }
+            });
+        }
+
+        const saveBtn = state.toolContainer.querySelector('#save-config-btn');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => {
+                const selectedTypes = [];
+                const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
+                checkboxes.forEach(cb => {
+                    if (cb.checked) selectedTypes.push(cb.value);
+                });
+
+                let arrange = 'horizontal';
+                const selectedArrange = state.toolContainer.querySelector('input[name="arrange"]:checked');
+                if (selectedArrange) arrange = selectedArrange.value;
+
+                const size = parseInt(sizeSlider?.value || DEFAULT_USER_CONFIG.promptSize);
+                const opacity = parseInt(opacitySlider?.value || DEFAULT_USER_CONFIG.promptOpacity);
+                const alarmRing = alarmSwitch?.checked || false;
+
+                state.userConfig.promptType = selectedTypes;
+                state.userConfig.promptArrange = arrange;
+                state.userConfig.promptSize = size;
+                state.userConfig.promptOpacity = opacity;
+                state.userConfig.alarmRing = alarmRing;
+
+                saveUserConfig();
+                showToast('配置已保存', 'success');
+
+                setTimeout(closeConfigTool, 1000);
+            });
+        }
+    }
+
+    function updatePreview() {
+        if (!state.toolContainer) return;
+
+        const wrapper = state.toolContainer.querySelector('#preview-wrapper');
+        if (!wrapper) return;
+
+        const previewTypes = ['prefilled', 'exempted'];
+
+        const sizeSlider = state.toolContainer.querySelector('#size-slider');
+        const opacitySlider = state.toolContainer.querySelector('#opacity-slider');
+        const scale = (parseInt(sizeSlider?.value || 100) / 100);
+        const opacity = (parseInt(opacitySlider?.value || 100) / 100);
+
+        let previewHTML = '';
+        previewTypes.forEach(type => {
+            previewHTML += `<div class="preview-item" style="background-color: ${TYPE_COLORS[type]}; opacity: ${opacity};">${TYPE_NAMES[type]}</div>`;
+        });
+        previewHTML += `<div class="preview-item confirm-btn" style="background-color: #f44336; color: white; border: none; opacity: ${opacity};">确认</div>`;
+
+        wrapper.innerHTML = previewHTML;
+        wrapper.style.transform = `scale(${scale})`;
+
+        if (!wrapper.classList.contains('vertical')) {
+            const items = wrapper.querySelectorAll('.preview-item');
+            const height = 28;
+            items.forEach(item => {
+                item.style.width = (height * 2) + 'px';
+                item.style.textAlign = 'center';
+                item.style.padding = '6px 0';
+            });
+        }
+
+        if (wrapper.classList.contains('vertical')) {
+            const items = wrapper.querySelectorAll('.preview-item');
+            const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
+            items.forEach(item => {
+                item.style.width = maxWidth + 'px';
+                item.style.textAlign = 'center';
+            });
+        }
+    }
+
+    function showToast(message, type = 'info') {
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 24px;
+            background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
+            color: white;
+            border-radius: 6px;
+            font-size: 14px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000002;
+            animation: slideIn 0.3s ease;
+        `;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.animation = 'slideOut 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 2000);
     }
 
     // ========== 提示显示 ==========
@@ -507,10 +816,32 @@
         state.currentLiveData = liveData;
         state.currentTypes = types;
         state.isConfirmed = false;
+        state.lastPopupTime = Date.now();
+        state.popupConfirmed = false;
 
         closePrompt();
         createPrompt();
         startPushTimer();
+        startAlarmCheck();
+
+        // 添加空格键监听
+        if (state.spaceHandler) {
+            document.removeEventListener('keydown', state.spaceHandler);
+        }
+
+        state.spaceHandler = (e) => {
+            if (e.code === 'Space' && !state.isConfirmed && document.getElementById('ilabel-prompt-container')) {
+                e.preventDefault();
+                e.stopPropagation();
+                handleConfirmAndCopy();
+            }
+        };
+
+        document.addEventListener('keydown', state.spaceHandler);
+
+        if (state.userConfig.alarmRing) {
+            setTimeout(() => playAlarm(), 100);
+        }
     }
 
     function closePrompt() {
@@ -518,6 +849,67 @@
             state.promptContainer.remove();
             state.promptContainer = null;
         }
+        if (state.pushInterval) {
+            clearInterval(state.pushInterval);
+            state.pushInterval = null;
+        }
+        if (state.alarmCheckInterval) {
+            clearInterval(state.alarmCheckInterval);
+            state.alarmCheckInterval = null;
+        }
+        if (state.spaceHandler) {
+            document.removeEventListener('keydown', state.spaceHandler);
+            state.spaceHandler = null;
+        }
+        stopAlarm();
+        state.isConfirmed = false;
+        state.popupConfirmed = true;
+    }
+
+    function copyLiveId() {
+        if (state.currentLiveData?.liveId) {
+            navigator.clipboard.writeText(state.currentLiveData.liveId).then(() => {
+                console.log('LiveID已复制:', state.currentLiveData.liveId);
+                // 显示临时提示
+                const toast = document.createElement('div');
+                toast.style.cssText = `
+                    position: fixed;
+                    top: 50%;
+                    left: 50%;
+                    transform: translate(-50%, -50%);
+                    padding: 8px 16px;
+                    background: rgba(0,0,0,0.8);
+                    color: white;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    z-index: 1000002;
+                    animation: fadeInOut 1s ease;
+                `;
+                toast.textContent = 'LiveID已复制';
+                document.body.appendChild(toast);
+                setTimeout(() => toast.remove(), 1000);
+            }).catch(err => {
+                console.error('复制失败:', err);
+            });
+        }
+    }
+
+    function handleConfirmAndCopy() {
+        if (state.isConfirmed) return;
+
+        state.isConfirmed = true;
+        state.popupConfirmed = true;
+
+        // 复制LiveID
+        copyLiveId();
+
+        // 移除确认按钮
+        const confirmWrapper = document.querySelector('.confirm-wrapper');
+        if (confirmWrapper) {
+            confirmWrapper.remove();
+        }
+
+        // 停止推送和闹钟
         if (state.pushInterval) {
             clearInterval(state.pushInterval);
             state.pushInterval = null;
@@ -537,15 +929,16 @@
             transform-origin: left top;
             cursor: move;
             user-select: none;
+            opacity: ${state.userConfig.promptOpacity / 100};
         `;
 
         const wrapper = document.createElement('div');
         wrapper.style.cssText = `
             display: flex;
-            gap: 8px;
+            gap: 0;
             ${state.userConfig.promptArrange === 'vertical' ? 'flex-direction: column;' : ''}
             background: transparent;
-            padding: 5px;
+            padding: 0;
         `;
 
         state.currentTypes.forEach(type => {
@@ -553,8 +946,35 @@
             wrapper.appendChild(tag);
         });
 
+        const confirmWrapper = document.createElement('div');
+        confirmWrapper.className = 'confirm-wrapper';
+
         const confirmBtn = createConfirmButton();
-        wrapper.appendChild(confirmBtn);
+        confirmWrapper.appendChild(confirmBtn);
+        wrapper.appendChild(confirmWrapper);
+
+        if (state.userConfig.promptArrange === 'horizontal') {
+            setTimeout(() => {
+                const items = wrapper.querySelectorAll('.prompt-tag, .prompt-confirm-btn');
+                const height = 28;
+                items.forEach(item => {
+                    item.style.width = (height * 2) + 'px';
+                    item.style.textAlign = 'center';
+                    item.style.padding = '6px 0';
+                });
+            }, 0);
+        }
+
+        if (state.userConfig.promptArrange === 'vertical') {
+            setTimeout(() => {
+                const items = wrapper.querySelectorAll('.prompt-tag, .prompt-confirm-btn');
+                const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
+                items.forEach(item => {
+                    item.style.width = maxWidth + 'px';
+                    item.style.textAlign = 'center';
+                });
+            }, 0);
+        }
 
         state.promptContainer.appendChild(wrapper);
         document.body.appendChild(state.promptContainer);
@@ -564,47 +984,61 @@
 
     function createTypeTag(type) {
         const tag = document.createElement('div');
-        const color = getTypeColor(type);
+        tag.className = 'prompt-tag';
+        const color = TYPE_COLORS[type] || TYPE_COLORS.normal;
         const textColor = getContrastColor(color);
 
         tag.style.cssText = `
-            padding: 6px 12px;
-            border-radius: 4px;
+            padding: 6px 16px;
             background-color: ${color};
             color: ${textColor};
             font-size: 12px;
             font-weight: bold;
             white-space: nowrap;
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            border-radius: 20px;
+            margin: 0;
         `;
+
         tag.textContent = TYPE_NAMES[type] || type;
         return tag;
     }
 
     function createConfirmButton() {
         const btn = document.createElement('div');
+        btn.className = 'prompt-confirm-btn';
         btn.style.cssText = `
-            padding: 6px 12px;
-            border-radius: 4px;
-            background-color: white;
-            color: #333;
+            padding: 6px 16px;
+            background-color: #f44336;
+            color: white;
             font-size: 12px;
             font-weight: bold;
             white-space: nowrap;
             box-shadow: 0 2px 4px rgba(0,0,0,0.2);
             cursor: pointer;
-            border: 1px solid #ddd;
+            border: none;
+            border-radius: 20px;
+            margin: 0;
+            text-align: center;
+            transition: all 0.2s;
         `;
         btn.textContent = '确认';
 
-        btn.addEventListener('click', () => {
-            state.isConfirmed = true;
-            btn.style.backgroundColor = '#f0f0f0';
-            if (state.pushInterval) {
-                clearInterval(state.pushInterval);
-                state.pushInterval = null;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            handleConfirmAndCopy();
+        });
+
+        btn.addEventListener('mouseenter', () => {
+            if (!state.isConfirmed) {
+                btn.style.backgroundColor = '#d32f2f';
             }
-            stopAlarm();
+        });
+
+        btn.addEventListener('mouseleave', () => {
+            if (!state.isConfirmed) {
+                btn.style.backgroundColor = '#f44336';
+            }
         });
 
         return btn;
@@ -660,9 +1094,6 @@
             if (now - state.lastPushTime >= 20000) {
                 sendReminderPush();
                 state.lastPushTime = now;
-                if (state.userConfig.alarmRing) {
-                    playAlarm();
-                }
             }
         }, 1000);
     }
@@ -695,49 +1126,15 @@
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify(data),
             timeout: 5000,
-            onload: (r) => r.status === 200 ? console.log('推送成功') : console.error('推送失败', r.status),
+            onload: (r) => {
+                if (r.status === 200) {
+                    console.log('推送成功');
+                } else {
+                    console.error('推送失败', r.status);
+                }
+            },
             onerror: console.error
         });
-    }
-
-    // ========== 闹钟 ==========
-    function playTestAlarm() {
-        playAlarm(3);
-    }
-
-    function playAlarm(duration = 1) {
-        try {
-            if (!state.audioContext) {
-                state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-            if (state.audioContext.state === 'suspended') {
-                state.audioContext.resume();
-            }
-
-            const oscillator = state.audioContext.createOscillator();
-            const gainNode = state.audioContext.createGain();
-
-            oscillator.type = 'sine';
-            oscillator.frequency.value = 880;
-            gainNode.gain.value = 0.1;
-
-            oscillator.connect(gainNode);
-            gainNode.connect(state.audioContext.destination);
-
-            oscillator.start();
-            oscillator.stop(state.audioContext.currentTime + duration);
-
-            console.log(`闹钟播放 ${duration}秒`);
-        } catch (error) {
-            console.error('播放闹钟失败', error);
-        }
-    }
-
-    function stopAlarm() {
-        if (state.audioContext) {
-            state.audioContext.close();
-            state.audioContext = null;
-        }
     }
 
     // ========== 请求拦截 ==========
@@ -873,17 +1270,24 @@
                     operator = result.oper_name.trim();
                 }
 
+                // 构建结论
                 let conclusion = '不处罚';
                 let reasonLabel = null;
                 let remark = null;
 
-                if (result.finder_object && Array.isArray(result.finder_object)) {
-                    for (const item of result.finder_object) {
-                        if (item.ext_info && item.ext_info.reason_label) {
-                            reasonLabel = item.ext_info.reason_label;
-                            remark = item.remark || null;
-                            break;
+                // 从finder_object中提取处罚信息
+                if (result.finder_object && Array.isArray(result.finder_object) && result.finder_object.length > 0) {
+                    const finderItem = result.finder_object[0];
+                    if (finderItem.ext_info) {
+                        // 优先使用reason_label（对应示例2中的"虚构高价"）
+                        reasonLabel = finderItem.ext_info.reason_label;
+
+                        // 如果有多个reason_label，使用最具体的那个
+                        if (finderItem.ext_info.punish_keyword_path && finderItem.ext_info.punish_keyword_path.length > 0) {
+                            reasonLabel = finderItem.ext_info.punish_keyword_path[finderItem.ext_info.punish_keyword_path.length - 1];
                         }
+
+                        remark = finderItem.remark || null;
                     }
                 }
 
@@ -891,10 +1295,17 @@
                     conclusion = remark ? `${reasonLabel}（${remark}）` : reasonLabel;
                 }
 
-                const auditData = { task_id: taskId, live_id: liveId, conclusion, operator };
+                const auditData = {
+                    task_id: taskId,
+                    live_id: liveId,
+                    conclusion: conclusion,
+                    operator: operator
+                };
+
                 console.log('审核结果:', auditData);
                 sendAnswerPush(auditData);
             });
+
         } catch (error) {
             console.error('处理答案提交失败', error);
         }
@@ -913,7 +1324,14 @@
             headers: { 'Content-Type': 'application/json' },
             data: JSON.stringify({ msgtype: "text", text: { content } }),
             timeout: 5000,
-            onload: (r) => r.status === 200 ? console.log('答案推送成功') : console.error('答案推送失败', r.status),
+            onload: (r) => {
+                if (r.status === 200) {
+                    console.log('答案推送成功');
+                    closePrompt();
+                } else {
+                    console.error('答案推送失败', r.status);
+                }
+            },
             onerror: console.error
         });
     }
@@ -1043,21 +1461,6 @@
         }
     }
 
-    function getTypeColor(type) {
-        const colors = state.globalConfig?.popupColor || {};
-        const map = {
-            targeted: colors.targetedColor || '#000000',
-            prefilled: colors.prefilledColor || '#f44336',
-            exempted: colors.exemptedColor || '#4caf50',
-            review: colors.reviewColor || '#2196f3',
-            note: colors.noteColor || '#90caf9',
-            penalty: colors.penaltyColor || '#ff9800',
-            complaint: colors.complaintColor || '#9e9e9e',
-            normal: colors.normalColor || '#9e9e9e'
-        };
-        return map[type] || '#9e9e9e';
-    }
-
     function getContrastColor(hexcolor) {
         if (!hexcolor.startsWith('#')) return '#ffffff';
         const hex = hexcolor.substring(1);
@@ -1080,25 +1483,196 @@
                 cursor: move;
                 user-select: none;
             }
+            #ilabel-prompt-container > div {
+                display: flex;
+                gap: 0;
+                background: transparent;
+                padding: 0;
+            }
+            #ilabel-prompt-container > div.vertical {
+                flex-direction: column;
+            }
             .prompt-tag, .prompt-confirm-btn {
-                padding: 6px 12px;
-                border-radius: 4px;
+                padding: 6px 16px;
                 font-size: 12px;
                 font-weight: bold;
                 white-space: nowrap;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                border-radius: 20px;
+                margin: 0;
+                text-align: center;
+                transition: all 0.2s;
             }
             .prompt-confirm-btn {
-                background: white;
-                color: #333;
-                border: 1px solid #ddd;
                 cursor: pointer;
             }
             .prompt-confirm-btn:hover {
-                background: #f5f5f5;
+                background-color: #d32f2f !important;
             }
-            .prompt-confirm-btn.confirmed {
-                background: #f0f0f0;
+
+            @keyframes fadeInOut {
+                0% { opacity: 0; transform: translate(-50%, 60%); }
+                20% { opacity: 1; transform: translate(-50%, -50%); }
+                80% { opacity: 1; transform: translate(-50%, -50%); }
+                100% { opacity: 0; transform: translate(-50%, -140%); }
+            }
+
+            /* 配置工具样式保持不变 */
+            #ilabel-config-tool * {
+                box-sizing: border-box;
+            }
+            #ilabel-config-tool .config-tool-container {
+                padding: 20px;
+            }
+            #ilabel-config-tool .config-tool-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 15px;
+                padding-bottom: 10px;
+                border-bottom: 2px solid #f0f0f0;
+            }
+            #ilabel-config-tool .config-tool-header h3 {
+                margin: 0;
+                color: #333;
+                font-size: 16px;
+                font-weight: 600;
+            }
+            #ilabel-config-tool .close-btn {
+                background: none;
+                border: none;
+                font-size: 24px;
+                cursor: pointer;
+                color: #999;
+                line-height: 1;
+                padding: 0 5px;
+            }
+            #ilabel-config-tool .close-btn:hover {
+                color: #333;
+            }
+            #ilabel-config-tool .section-label {
+                display: block;
+                margin-bottom: 8px;
+                font-weight: 600;
+                color: #444;
+                font-size: 13px;
+            }
+            #ilabel-config-tool .checkbox-item {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            #ilabel-config-tool .checkbox-item input[type="checkbox"] {
+                margin: 0;
+            }
+            #ilabel-config-tool .radio-group label {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            #ilabel-config-tool .switch {
+                position: relative;
+                display: inline-block;
+                width: 44px;
+                height: 22px;
+            }
+            #ilabel-config-tool .switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            #ilabel-config-tool .slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #ccc;
+                transition: .3s;
+                border-radius: 22px;
+            }
+            #ilabel-config-tool .slider:before {
+                position: absolute;
+                content: "";
+                height: 18px;
+                width: 18px;
+                left: 2px;
+                bottom: 2px;
+                background-color: white;
+                transition: .3s;
+                border-radius: 50%;
+            }
+            #ilabel-config-tool input:checked + .slider {
+                background-color: #4caf50;
+            }
+            #ilabel-config-tool input:checked + .slider:before {
+                transform: translateX(22px);
+            }
+            #ilabel-config-tool .test-btn {
+                padding: 4px 12px;
+                background: #2196f3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            #ilabel-config-tool .test-btn:disabled {
+                background: #ccc;
+                cursor: not-allowed;
+            }
+            #ilabel-config-tool .preview-wrapper {
+                display: flex;
+                gap: 0;
+                transform-origin: center;
+            }
+            #ilabel-config-tool .preview-wrapper.vertical {
+                flex-direction: column;
+            }
+            #ilabel-config-tool .preview-wrapper.vertical .preview-item {
+                width: 100%;
+                text-align: center;
+            }
+            #ilabel-config-tool .preview-wrapper:not(.vertical) .preview-item {
+                width: 56px;
+                text-align: center;
+                padding: 6px 0;
+            }
+            #ilabel-config-tool .preview-item {
+                padding: 4px 12px;
+                font-size: 12px;
+                font-weight: 500;
+                white-space: nowrap;
+                border-radius: 20px;
+                color: white;
+            }
+            #ilabel-config-tool .preview-item.confirm-btn {
+                background-color: #f44336 !important;
+                color: white !important;
+                border: none !important;
+            }
+            #ilabel-config-tool .reset-btn {
+                background: #ff9800;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                cursor: pointer;
+                font-size: 12px;
+            }
+            #ilabel-config-tool .save-btn {
+                background: #4caf50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                cursor: pointer;
+                font-size: 12px;
             }
         `);
     }
