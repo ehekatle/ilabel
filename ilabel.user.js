@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.0.0
+// @version      3.0.2
 // @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
@@ -24,6 +24,9 @@
 
 (function () {
     'use strict';
+
+    // 获取脚本版本号
+    const SCRIPT_VERSION = GM_info.script.version;
 
     // 可选：屏蔽WebSocket相关错误
     const originalConsoleError = console.error;
@@ -119,8 +122,8 @@
             // 添加样式
             addStyles();
 
-            // 注册菜单命令
-            GM_registerMenuCommand('⚙️ 打开配置工具', () => {
+            // 注册菜单命令（修改为不带图标，并显示版本号）
+            GM_registerMenuCommand(`配置工具（${SCRIPT_VERSION}）`, () => {
                 toggleConfigTool();
             });
 
@@ -522,10 +525,10 @@
         return `
             <div class="config-tool-container">
                 <div class="config-tool-header">
-                    <h3>iLabel辅助工具配置</h3>
+                    <h3>iLabel辅助工具配置 v${SCRIPT_VERSION}</h3>
                     <button class="close-btn" id="close-config-btn">×</button>
                 </div>
-                
+
                 <div class="config-tool-body" style="display: flex; gap: 20px;">
                     <!-- 左侧配置区 -->
                     <div style="flex: 1;">
@@ -535,7 +538,7 @@
                                 ${typesHTML}
                             </div>
                         </div>
-                        
+
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">排列方式：</label>
                             <div class="radio-group" style="display: flex; gap: 20px;">
@@ -543,7 +546,7 @@
                                 <label><input type="radio" name="arrange" value="vertical" ${state.userConfig.promptArrange === 'vertical' ? 'checked' : ''}> 纵向</label>
                             </div>
                         </div>
-                        
+
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">缩放比例 <span id="size-value">${state.userConfig.promptSize}</span>%：</label>
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -551,7 +554,7 @@
                                 <input type="number" id="size-input" min="20" max="200" step="5" value="${state.userConfig.promptSize}" style="width: 60px; padding: 4px;">
                             </div>
                         </div>
-                        
+
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">透明度 <span id="opacity-value">${state.userConfig.promptOpacity}</span>%：</label>
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -559,7 +562,7 @@
                                 <input type="number" id="opacity-input" min="10" max="100" step="5" value="${state.userConfig.promptOpacity}" style="width: 60px; padding: 4px;">
                             </div>
                         </div>
-                        
+
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">闹钟提醒：</label>
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -572,7 +575,7 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- 右侧预览区 -->
                     <div style="width: 220px;">
                         <div class="preview-section">
@@ -585,7 +588,7 @@
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="config-tool-footer" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
                     <button id="reset-config-btn" class="reset-btn">恢复默认</button>
                     <button id="save-config-btn" class="save-btn">保存配置</button>
@@ -775,15 +778,24 @@
                 item.style.textAlign = 'center';
                 item.style.padding = '6px 0';
             });
-        }
-
-        if (wrapper.classList.contains('vertical')) {
+        } else {
+            // 竖向模式：宽度自适应内容，不设置固定宽度
             const items = wrapper.querySelectorAll('.preview-item');
-            const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
             items.forEach(item => {
-                item.style.width = maxWidth + 'px';
+                item.style.width = 'auto';
+                item.style.minWidth = '56px';
+                item.style.padding = '6px 16px';
                 item.style.textAlign = 'center';
             });
+
+            // 让所有项宽度一致（取最大宽度）
+            setTimeout(() => {
+                const items = wrapper.querySelectorAll('.preview-item');
+                const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
+                items.forEach(item => {
+                    item.style.width = maxWidth + 'px';
+                });
+            }, 0);
         }
     }
 
@@ -870,7 +882,6 @@
         if (state.currentLiveData?.liveId) {
             navigator.clipboard.writeText(state.currentLiveData.liveId).then(() => {
                 console.log('LiveID已复制:', state.currentLiveData.liveId);
-                // 显示临时提示
                 const toast = document.createElement('div');
                 toast.style.cssText = `
                     position: fixed;
@@ -968,10 +979,18 @@
         if (state.userConfig.promptArrange === 'vertical') {
             setTimeout(() => {
                 const items = wrapper.querySelectorAll('.prompt-tag, .prompt-confirm-btn');
+                // 竖向模式：宽度自适应内容，不设置固定宽度
+                items.forEach(item => {
+                    item.style.width = 'auto';
+                    item.style.minWidth = '56px';
+                    item.style.padding = '6px 16px';
+                    item.style.textAlign = 'center';
+                });
+
+                // 让所有项宽度一致（取最大宽度）
                 const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
                 items.forEach(item => {
                     item.style.width = maxWidth + 'px';
-                    item.style.textAlign = 'center';
                 });
             }, 0);
         }
@@ -1270,7 +1289,7 @@
                     operator = result.oper_name.trim();
                 }
 
-                // 构建结论
+                // 构建结论 - 优先使用 reason_label
                 let conclusion = '不处罚';
                 let reasonLabel = null;
                 let remark = null;
@@ -1279,11 +1298,11 @@
                 if (result.finder_object && Array.isArray(result.finder_object) && result.finder_object.length > 0) {
                     const finderItem = result.finder_object[0];
                     if (finderItem.ext_info) {
-                        // 优先使用reason_label（对应示例2中的"虚构高价"）
+                        // 优先使用 reason_label（最具体的处罚原因）
                         reasonLabel = finderItem.ext_info.reason_label;
 
-                        // 如果有多个reason_label，使用最具体的那个
-                        if (finderItem.ext_info.punish_keyword_path && finderItem.ext_info.punish_keyword_path.length > 0) {
+                        // 如果没有 reason_label，则使用 punish_keyword_path 的最后一个
+                        if (!reasonLabel && finderItem.ext_info.punish_keyword_path && finderItem.ext_info.punish_keyword_path.length > 0) {
                             reasonLabel = finderItem.ext_info.punish_keyword_path[finderItem.ext_info.punish_keyword_path.length - 1];
                         }
 
@@ -1509,15 +1528,15 @@
             .prompt-confirm-btn:hover {
                 background-color: #d32f2f !important;
             }
-            
+
             @keyframes fadeInOut {
                 0% { opacity: 0; transform: translate(-50%, 60%); }
                 20% { opacity: 1; transform: translate(-50%, -50%); }
                 80% { opacity: 1; transform: translate(-50%, -50%); }
                 100% { opacity: 0; transform: translate(-50%, -140%); }
             }
-            
-            /* 配置工具样式保持不变 */
+
+            /* 配置工具样式 */
             #ilabel-config-tool * {
                 box-sizing: border-box;
             }
@@ -1635,8 +1654,10 @@
                 flex-direction: column;
             }
             #ilabel-config-tool .preview-wrapper.vertical .preview-item {
-                width: 100%;
+                width: auto !important;
+                min-width: 56px;
                 text-align: center;
+                padding: 6px 16px;
             }
             #ilabel-config-tool .preview-wrapper:not(.vertical) .preview-item {
                 width: 56px;
