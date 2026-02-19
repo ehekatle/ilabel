@@ -525,7 +525,7 @@
                     <h3>iLabel辅助工具配置</h3>
                     <button class="close-btn" id="close-config-btn">×</button>
                 </div>
-
+                
                 <div class="config-tool-body" style="display: flex; gap: 20px;">
                     <!-- 左侧配置区 -->
                     <div style="flex: 1;">
@@ -535,7 +535,7 @@
                                 ${typesHTML}
                             </div>
                         </div>
-
+                        
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">排列方式：</label>
                             <div class="radio-group" style="display: flex; gap: 20px;">
@@ -543,7 +543,7 @@
                                 <label><input type="radio" name="arrange" value="vertical" ${state.userConfig.promptArrange === 'vertical' ? 'checked' : ''}> 纵向</label>
                             </div>
                         </div>
-
+                        
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">缩放比例 <span id="size-value">${state.userConfig.promptSize}</span>%：</label>
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -551,7 +551,7 @@
                                 <input type="number" id="size-input" min="20" max="200" step="5" value="${state.userConfig.promptSize}" style="width: 60px; padding: 4px;">
                             </div>
                         </div>
-
+                        
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">透明度 <span id="opacity-value">${state.userConfig.promptOpacity}</span>%：</label>
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -559,7 +559,7 @@
                                 <input type="number" id="opacity-input" min="10" max="100" step="5" value="${state.userConfig.promptOpacity}" style="width: 60px; padding: 4px;">
                             </div>
                         </div>
-
+                        
                         <div class="config-section" style="margin-top: 15px;">
                             <label class="section-label">闹钟提醒：</label>
                             <div style="display: flex; gap: 10px; align-items: center;">
@@ -572,7 +572,7 @@
                             </div>
                         </div>
                     </div>
-
+                    
                     <!-- 右侧预览区 -->
                     <div style="width: 220px;">
                         <div class="preview-section">
@@ -585,7 +585,7 @@
                         </div>
                     </div>
                 </div>
-
+                
                 <div class="config-tool-footer" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
                     <button id="reset-config-btn" class="reset-btn">恢复默认</button>
                     <button id="save-config-btn" class="save-btn">保存配置</button>
@@ -1509,14 +1509,14 @@
             .prompt-confirm-btn:hover {
                 background-color: #d32f2f !important;
             }
-
+            
             @keyframes fadeInOut {
                 0% { opacity: 0; transform: translate(-50%, 60%); }
                 20% { opacity: 1; transform: translate(-50%, -50%); }
                 80% { opacity: 1; transform: translate(-50%, -50%); }
                 100% { opacity: 0; transform: translate(-50%, -140%); }
             }
-
+            
             /* 配置工具样式保持不变 */
             #ilabel-config-tool * {
                 box-sizing: border-box;
