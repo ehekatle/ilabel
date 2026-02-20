@@ -1,15 +1,14 @@
 // ==UserScript==
-// @name         iLabel直播审核辅助
+// @name         iLabel直播审核辅助3.1.0
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.0.2
-// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒）
+// @version      3.1.0
+// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
 // @updateURL    https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
 // @downloadURL  https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
 // @match        https://ilabel.weixin.qq.com/*
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=weixin.qq.com
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -47,7 +46,26 @@
         USER_CONFIG: 'ilabel_user_config',
         LAST_CONFIG_UPDATE: 'ilabel_last_config_update',
         ALARM_AUDIO_DATA: 'ilabel_alarm_audio_data',
-        ALARM_AUDIO_TIMESTAMP: 'ilabel_alarm_audio_timestamp'
+        ALARM_AUDIO_TIMESTAMP: 'ilabel_alarm_audio_timestamp',
+        // 队列相关缓存键
+        QUEUE_LIST: 'ilabel_queue_list',
+        QUEUE_LIST_TIMESTAMP: 'ilabel_queue_list_timestamp',
+        QUEUE_HIT_CACHE: 'ilabel_queue_hit_cache',
+        QUEUE_HIT_STATS: 'ilabel_queue_hit_stats'
+    };
+
+    // 队列查询API
+    const QUEUE_API = {
+        LIST: 'https://ilabel.weixin.qq.com/api/mission/list?pageindex=1&pagesize=100&query=%7B%22mid%22:%22%22,%22keyword%22:%22%22,%22status%22:1,%22authorities%22:[]%7D&mission_type=5&business=32',
+        HITS: 'https://ilabel.weixin.qq.com/api/labeled-hits'
+    };
+
+    // 队列查询配置
+    const QUEUE_CONFIG = {
+        CACHE_EXPIRY: 5 * 60 * 1000, // 缓存有效期5分钟
+        BATCH_SIZE: 5, // 每批查询5个队列
+        MAX_HISTORY: 100, // 保留最近100条查询历史用于统计
+        STATS_UPDATE_INTERVAL: 10 // 每10次查询更新一次统计
     };
 
     // 默认用户配置
@@ -102,7 +120,22 @@
         overlay: null,
         lastPopupTime: null,
         popupConfirmed: true,
-        spaceHandler: null
+        spaceHandler: null,
+        // 队列查询相关状态
+        queueModalVisible: false,
+        queueModal: null,
+        queueOverlay: null,
+        currentLiveId: '',
+        queueResults: [],
+        isLoadingQueues: false,
+        // 队列优化相关状态
+        queueList: [], // 预加载的队列列表
+        queueHitCache: new Map(), // 查询结果缓存
+        queueHitStats: new Map(), // 队列命中率统计
+        pendingQueries: new Map(), // 进行中的查询
+        searchStartTime: 0, // 查询开始时间
+        processedQueues: new Set(), // 已处理的队列
+        queryCount: 0 // 查询计数器
     };
 
     // ========== 初始化 ==========
@@ -119,12 +152,23 @@
             // 预加载闹钟音频
             preloadAlarmAudio();
 
+            // 预加载队列列表
+            await preloadQueueList();
+
+            // 加载队列缓存和统计
+            loadQueueCache();
+
             // 添加样式
             addStyles();
 
-            // 注册菜单命令（修改为不带图标，并显示版本号）
-            GM_registerMenuCommand(`配置工具（${SCRIPT_VERSION}）`, () => {
+            // 注册菜单命令
+            GM_registerMenuCommand(`提示配置`, () => {
                 toggleConfigTool();
+            });
+
+            // 注册队列查询菜单
+            GM_registerMenuCommand(`队列查询`, () => {
+                toggleQueueModal();
             });
 
             // 设置请求拦截
@@ -138,6 +182,627 @@
         } catch (error) {
             console.error('iLabel辅助工具: 初始化失败', error);
         }
+    }
+
+    // ========== 队列缓存和统计功能 ==========
+
+    // 预加载队列列表
+    async function preloadQueueList() {
+        try {
+            const cached = GM_getValue(STORAGE_KEYS.QUEUE_LIST, null);
+            const timestamp = GM_getValue(STORAGE_KEYS.QUEUE_LIST_TIMESTAMP, 0);
+
+            // 缓存有效期24小时
+            if (cached && (Date.now() - timestamp) < 24 * 60 * 60 * 1000) {
+                state.queueList = JSON.parse(cached);
+                console.log('使用缓存的队列列表，共', state.queueList.length, '个队列');
+                return;
+            }
+
+            console.log('正在加载队列列表...');
+            const missions = await fetchQueueList();
+            state.queueList = missions;
+
+            // 保存到缓存
+            GM_setValue(STORAGE_KEYS.QUEUE_LIST, JSON.stringify(missions));
+            GM_setValue(STORAGE_KEYS.QUEUE_LIST_TIMESTAMP, Date.now());
+
+            console.log('队列列表加载完成，共', missions.length, '个队列');
+        } catch (error) {
+            console.error('预加载队列列表失败', error);
+            // 如果加载失败但有缓存，使用缓存
+            const cached = GM_getValue(STORAGE_KEYS.QUEUE_LIST, null);
+            if (cached) {
+                state.queueList = JSON.parse(cached);
+                console.log('使用旧缓存队列列表，共', state.queueList.length, '个队列');
+            }
+        }
+    }
+
+    // 加载队列缓存和统计
+    function loadQueueCache() {
+        try {
+            // 加载命中缓存
+            const hitCache = GM_getValue(STORAGE_KEYS.QUEUE_HIT_CACHE, '{}');
+            const cache = JSON.parse(hitCache);
+
+            // 清理过期缓存
+            const now = Date.now();
+            Object.entries(cache).forEach(([key, value]) => {
+                if (now - value.timestamp < QUEUE_CONFIG.CACHE_EXPIRY) {
+                    state.queueHitCache.set(key, value);
+                }
+            });
+
+            console.log('加载命中缓存:', state.queueHitCache.size, '条');
+
+            // 加载命中统计
+            const hitStats = GM_getValue(STORAGE_KEYS.QUEUE_HIT_STATS, '{}');
+            const stats = JSON.parse(hitStats);
+            Object.entries(stats).forEach(([queueId, count]) => {
+                state.queueHitStats.set(parseInt(queueId), count);
+            });
+
+            console.log('加载命中统计:', state.queueHitStats.size, '个队列');
+        } catch (e) {
+            console.error('加载队列缓存失败', e);
+        }
+    }
+
+    // 保存查询结果到缓存
+    function saveToHitCache(liveId, queueId, total) {
+        const key = `${liveId}_${queueId}`;
+        state.queueHitCache.set(key, {
+            total,
+            timestamp: Date.now()
+        });
+
+        // 更新统计
+        if (total > 0) {
+            const currentCount = state.queueHitStats.get(queueId) || 0;
+            state.queueHitStats.set(queueId, currentCount + 1);
+        }
+
+        // 定期保存到GM存储
+        state.queryCount++;
+        if (state.queryCount % QUEUE_CONFIG.STATS_UPDATE_INTERVAL === 0) {
+            saveQueueCache();
+        }
+    }
+
+    // 保存队列缓存到GM存储
+    function saveQueueCache() {
+        try {
+            // 保存命中缓存
+            const cacheObj = {};
+            state.queueHitCache.forEach((value, key) => {
+                cacheObj[key] = value;
+            });
+            GM_setValue(STORAGE_KEYS.QUEUE_HIT_CACHE, JSON.stringify(cacheObj));
+
+            // 保存命中统计
+            const statsObj = {};
+            state.queueHitStats.forEach((value, key) => {
+                statsObj[key] = value;
+            });
+            GM_setValue(STORAGE_KEYS.QUEUE_HIT_STATS, JSON.stringify(statsObj));
+        } catch (e) {
+            console.error('保存队列缓存失败', e);
+        }
+    }
+
+    // 获取队列优先级（用于排序）
+    function getQueuePriority(queueId) {
+        const hitCount = state.queueHitStats.get(queueId) || 0;
+        // 命中率越高的队列优先级越高
+        return hitCount;
+    }
+
+    // ========== 队列查询功能 ==========
+    function toggleQueueModal() {
+        if (state.queueModalVisible) {
+            closeQueueModal();
+        } else {
+            openQueueModal();
+        }
+    }
+
+    function openQueueModal() {
+        if (state.queueModal) {
+            state.queueModal.style.display = 'block';
+            state.queueOverlay.style.display = 'block';
+            state.queueModalVisible = true;
+            // 清空之前的输入和结果
+            state.currentLiveId = '';
+            state.queueResults = [];
+            updateQueueModalContent();
+            return;
+        }
+        createQueueModal();
+    }
+
+    function closeQueueModal() {
+        if (state.queueModal) {
+            state.queueModal.style.display = 'none';
+        }
+        if (state.queueOverlay) {
+            state.queueOverlay.style.display = 'none';
+        }
+        state.queueModalVisible = false;
+        state.currentLiveId = '';
+        state.queueResults = [];
+
+        // 清理进行中的查询
+        state.pendingQueries.forEach((controller, queueId) => {
+            if (controller.abort) controller.abort();
+        });
+        state.pendingQueries.clear();
+        state.processedQueues.clear();
+    }
+
+    function createQueueModal() {
+        // 创建遮罩层
+        state.queueOverlay = document.createElement('div');
+        state.queueOverlay.id = 'ilabel-queue-overlay';
+        state.queueOverlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000000;
+            display: none;
+        `;
+        state.queueOverlay.addEventListener('click', closeQueueModal);
+        document.body.appendChild(state.queueOverlay);
+
+        // 创建弹窗
+        state.queueModal = document.createElement('div');
+        state.queueModal.id = 'ilabel-queue-modal';
+        state.queueModal.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 600px;
+            max-width: 90vw;
+            max-height: 80vh;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
+            z-index: 1000001;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            display: none;
+            overflow: hidden;
+        `;
+
+        state.queueModal.innerHTML = buildQueueModalHTML();
+        document.body.appendChild(state.queueModal);
+
+        bindQueueModalEvents();
+        updateQueueModalContent();
+
+        state.queueModal.style.display = 'block';
+        state.queueOverlay.style.display = 'block';
+        state.queueModalVisible = true;
+    }
+
+    function buildQueueModalHTML() {
+        return `
+            <div class="queue-modal-container" style="display: flex; flex-direction: column; height: 100%;">
+                <div class="queue-modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #eee;">
+                    <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #333;">队列查询</h3>
+                    <button class="close-queue-btn" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999; line-height: 1; padding: 0 5px;">×</button>
+                </div>
+
+                <div class="queue-modal-body" style="padding: 20px; overflow-y: auto; flex: 1;">
+                    <div class="search-section" style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <input type="text" id="live-id-input" placeholder="请输入 Live ID" value="${state.currentLiveId}"
+                            style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
+                        <button id="search-queue-btn" class="search-btn" style="padding: 8px 20px; background: #2196f3; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">查询</button>
+                    </div>
+
+                    <div class="results-section" style="min-height: 200px;">
+                        <div class="results-header" style="display: flex; justify-content: space-between; margin-bottom: 12px; padding: 0 4px;">
+                            <span style="font-size: 14px; color: #666;">查询结果 <span id="result-tip" style="margin-left: 8px; font-size: 12px; color: #999;"></span></span>
+                            <span id="result-count" style="font-size: 14px; color: #999;">0/0</span>
+                        </div>
+
+                        <div id="queue-results-list" class="results-list" style="display: flex; flex-direction: column; gap: 8px;">
+                            <!-- 结果将动态生成 -->
+                        </div>
+
+                        <div id="loading-indicator" style="display: none; text-align: center; padding: 40px 0; color: #999;">
+                            <div style="margin-bottom: 10px;">查询中...</div>
+                            <div style="width: 30px; height: 30px; border: 3px solid #f3f3f3; border-top: 3px solid #2196f3; border-radius: 50%; margin: 0 auto; animation: spin 1s linear infinite;"></div>
+                        </div>
+
+                        <div id="partial-results" style="display: none; text-align: center; padding: 20px 0; color: #999; border-top: 1px dashed #eee;">
+                            已显示部分结果，仍在查询中...
+                        </div>
+
+                        <div id="no-results" style="display: none; text-align: center; padding: 40px 0; color: #999;">
+                            暂无结果，请尝试其他 Live ID
+                        </div>
+                    </div>
+                </div>
+
+                <div class="queue-modal-footer" style="padding: 12px 20px; border-top: 1px solid #eee; font-size: 12px; color: #999; display: flex; justify-content: space-between;">
+                    <span>缓存: ${state.queueHitCache.size}条 | 统计: ${state.queueHitStats.size}队列</span>
+                    <span>队列数: ${state.queueList.length}</span>
+                </div>
+            </div>
+        `;
+    }
+
+    function bindQueueModalEvents() {
+        if (!state.queueModal) return;
+
+        // 关闭按钮
+        const closeBtn = state.queueModal.querySelector('.close-queue-btn');
+        if (closeBtn) {
+            closeBtn.addEventListener('click', closeQueueModal);
+        }
+
+        // 查询按钮
+        const searchBtn = state.queueModal.querySelector('#search-queue-btn');
+        const liveIdInput = state.queueModal.querySelector('#live-id-input');
+
+        if (searchBtn) {
+            searchBtn.addEventListener('click', () => {
+                const liveId = liveIdInput.value.trim();
+                if (liveId) {
+                    state.currentLiveId = liveId;
+                    searchQueues(liveId);
+                } else {
+                    showToast('请输入 Live ID', 'error');
+                }
+            });
+        }
+
+        // 回车键查询
+        if (liveIdInput) {
+            liveIdInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const liveId = liveIdInput.value.trim();
+                    if (liveId) {
+                        state.currentLiveId = liveId;
+                        searchQueues(liveId);
+                    } else {
+                        showToast('请输入 Live ID', 'error');
+                    }
+                }
+            });
+        }
+    }
+
+    function updateQueueModalContent() {
+        if (!state.queueModal) return;
+
+        const resultsList = state.queueModal.querySelector('#queue-results-list');
+        const loadingIndicator = state.queueModal.querySelector('#loading-indicator');
+        const partialResults = state.queueModal.querySelector('#partial-results');
+        const noResults = state.queueModal.querySelector('#no-results');
+        const resultCount = state.queueModal.querySelector('#result-count');
+        const resultTip = state.queueModal.querySelector('#result-tip');
+        const liveIdInput = state.queueModal.querySelector('#live-id-input');
+
+        if (liveIdInput) {
+            liveIdInput.value = state.currentLiveId;
+        }
+
+        if (state.isLoadingQueues) {
+            if (resultsList) resultsList.style.display = 'none';
+            if (noResults) noResults.style.display = 'none';
+            if (loadingIndicator) loadingIndicator.style.display = 'block';
+            if (partialResults) partialResults.style.display = 'none';
+            if (resultTip) resultTip.textContent = '';
+
+            const elapsed = Date.now() - state.searchStartTime;
+            if (resultCount) resultCount.textContent = `查询中... ${Math.floor(elapsed / 1000)}s`;
+        } else {
+            if (loadingIndicator) loadingIndicator.style.display = 'none';
+
+            if (state.queueResults.length > 0) {
+                if (resultsList) {
+                    resultsList.style.display = 'flex';
+                    resultsList.innerHTML = state.queueResults.map(queue => `
+                        <div class="queue-item" data-mid="${queue.mid}" data-title="${queue.title}" data-url="${queue.url}"
+                            style="padding: 12px 16px; background: #f5f5f5; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 1px solid transparent;"
+                            onmouseover="this.style.backgroundColor='#e8e8e8'; this.style.borderColor='#2196f3'"
+                            onmouseout="this.style.backgroundColor='#f5f5f5'; this.style.borderColor='transparent'">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div style="font-weight: 600; color: #333;">${queue.title}</div>
+                                <span style="background: #4caf50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px;">命中: ${queue.total}</span>
+                            </div>
+                            <div style="font-size: 11px; color: #999; margin-top: 6px;">队列ID: ${queue.mid} | 响应: ${queue.responseTime}ms</div>
+                        </div>
+                    `).join('');
+
+                    // 绑定点击事件
+                    resultsList.querySelectorAll('.queue-item').forEach(item => {
+                        item.addEventListener('click', () => {
+                            const url = item.dataset.url;
+                            if (url) {
+                                window.open(url, '_blank');
+                            }
+                        });
+                    });
+                }
+
+                if (state.processedQueues.size < state.queueList.length) {
+                    if (partialResults) {
+                        partialResults.style.display = 'block';
+                        partialResults.textContent = `已显示 ${state.queueResults.length}/${state.queueList.length} 个队列的结果，仍在查询中...`;
+                    }
+                    if (resultTip) resultTip.textContent = '(部分结果)';
+                } else {
+                    if (partialResults) partialResults.style.display = 'none';
+                    if (resultTip) resultTip.textContent = '';
+                }
+
+                if (noResults) noResults.style.display = 'none';
+                if (resultCount) resultCount.textContent = `${state.queueResults.length}/${state.processedQueues.size}`;
+            } else {
+                if (resultsList) resultsList.style.display = 'none';
+                if (noResults) noResults.style.display = 'block';
+                if (partialResults) partialResults.style.display = 'none';
+                if (resultTip) resultTip.textContent = '';
+                if (resultCount) resultCount.textContent = '0/0';
+            }
+        }
+    }
+
+    // 添加一个结果项
+    function addQueueResult(result) {
+        // 检查是否已存在
+        const exists = state.queueResults.some(r => r.mid === result.mid);
+        if (!exists) {
+            state.queueResults.push(result);
+            // 按命中数和响应时间排序
+            state.queueResults.sort((a, b) => {
+                if (a.total !== b.total) return b.total - a.total;
+                return a.responseTime - b.responseTime;
+            });
+            updateQueueModalContent();
+        }
+    }
+
+    async function searchQueues(liveId) {
+        // 清理之前的查询
+        state.pendingQueries.forEach((controller, queueId) => {
+            if (controller.abort) controller.abort();
+        });
+        state.pendingQueries.clear();
+        state.processedQueues.clear();
+
+        state.isLoadingQueues = true;
+        state.queueResults = [];
+        state.searchStartTime = Date.now();
+        updateQueueModalContent();
+
+        try {
+            // 如果没有队列列表，先加载
+            if (state.queueList.length === 0) {
+                await preloadQueueList();
+            }
+
+            // 按优先级排序队列
+            const sortedQueues = [...state.queueList].sort((a, b) => {
+                const priorityA = getQueuePriority(a.id);
+                const priorityB = getQueuePriority(b.id);
+                return priorityB - priorityA; // 优先级高的在前
+            });
+
+            // 分批次查询
+            const batches = [];
+            for (let i = 0; i < sortedQueues.length; i += QUEUE_CONFIG.BATCH_SIZE) {
+                batches.push(sortedQueues.slice(i, i + QUEUE_CONFIG.BATCH_SIZE));
+            }
+
+            // 逐批次查询
+            for (const batch of batches) {
+                // 并发查询当前批次
+                const promises = batch.map(mission => checkQueueHitWithCache(mission, liveId));
+                await Promise.all(promises);
+
+                // 每批次完成后更新显示
+                updateQueueModalContent();
+            }
+
+        } catch (error) {
+            console.error('队列查询失败:', error);
+            showToast('查询失败: ' + error.message, 'error');
+        } finally {
+            state.isLoadingQueues = false;
+            updateQueueModalContent();
+
+            // 保存缓存
+            saveQueueCache();
+
+            const elapsed = Date.now() - state.searchStartTime;
+            console.log(`查询完成，耗时: ${elapsed}ms，命中: ${state.queueResults.length}个队列`);
+        }
+    }
+
+    // 带缓存的队列查询
+    async function checkQueueHitWithCache(mission, liveId) {
+        const queueId = mission.id;
+
+        // 标记为已处理
+        state.processedQueues.add(queueId);
+
+        // 检查缓存
+        const cacheKey = `${liveId}_${queueId}`;
+        const cached = state.queueHitCache.get(cacheKey);
+
+        if (cached && (Date.now() - cached.timestamp) < QUEUE_CONFIG.CACHE_EXPIRY) {
+            console.log(`使用缓存: 队列 ${mission.title} 命中数 ${cached.total}`);
+
+            if (cached.total > 0) {
+                const detailUrl = `https://ilabel.weixin.qq.com/mission/${queueId}/modify?title=${encodeURIComponent(mission.title)}&status=all&answer=${encodeURIComponent(JSON.stringify({ key: 'live_id', op: '=', value: liveId }))}`;
+
+                addQueueResult({
+                    mid: queueId,
+                    title: mission.title,
+                    total: cached.total,
+                    url: detailUrl,
+                    responseTime: 0
+                });
+            }
+
+            return {
+                mid: queueId,
+                title: mission.title,
+                total: cached.total,
+                url: '',
+                responseTime: 0
+            };
+        }
+
+        // 创建 abort controller 用于取消请求
+        const controller = new AbortController();
+        state.pendingQueries.set(queueId, controller);
+
+        const startTime = Date.now();
+
+        try {
+            // 构建查询参数
+            const answerParam = JSON.stringify([{
+                key: 'live_id',
+                op: '=',
+                value: liveId
+            }]);
+
+            const url = `${QUEUE_API.HITS}?mid=${queueId}&pagesize=3&pageindex=1&query=&status=all&marker=&hit_id=&answer_id=&second_status=all&answer=${encodeURIComponent(answerParam)}&content_query=[]`;
+
+            const result = await new Promise((resolve) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: url,
+                    headers: {
+                        'accept': 'application/json, text/plain, */*',
+                        'x-requested-with': 'XMLHttpRequest'
+                    },
+                    onload: function (response) {
+                        const responseTime = Date.now() - startTime;
+
+                        try {
+                            if (response.status === 200) {
+                                const data = JSON.parse(response.responseText);
+                                if (data.status === 'ok') {
+                                    const total = data.data?.total || 0;
+
+                                    // 保存到缓存
+                                    saveToHitCache(liveId, queueId, total);
+
+                                    if (total > 0) {
+                                        const detailUrl = `https://ilabel.weixin.qq.com/mission/${queueId}/modify?title=${encodeURIComponent(mission.title)}&status=all&answer=${encodeURIComponent(JSON.stringify({ key: 'live_id', op: '=', value: liveId }))}`;
+
+                                        // 立即添加结果
+                                        addQueueResult({
+                                            mid: queueId,
+                                            title: mission.title,
+                                            total: total,
+                                            url: detailUrl,
+                                            responseTime: responseTime
+                                        });
+                                    }
+
+                                    resolve({
+                                        mid: queueId,
+                                        title: mission.title,
+                                        total: total,
+                                        url: '',
+                                        responseTime: responseTime
+                                    });
+                                } else {
+                                    resolve({
+                                        mid: queueId,
+                                        title: mission.title,
+                                        total: 0,
+                                        url: '',
+                                        responseTime: responseTime
+                                    });
+                                }
+                            } else {
+                                resolve({
+                                    mid: queueId,
+                                    title: mission.title,
+                                    total: 0,
+                                    url: '',
+                                    responseTime: responseTime
+                                });
+                            }
+                        } catch (e) {
+                            console.error(`解析队列 ${mission.title} 响应失败:`, e);
+                            resolve({
+                                mid: queueId,
+                                title: mission.title,
+                                total: 0,
+                                url: '',
+                                responseTime: responseTime
+                            });
+                        }
+                    },
+                    onerror: function (error) {
+                        console.error(`查询队列 ${mission.title} 网络错误:`, error);
+                        resolve({
+                            mid: queueId,
+                            title: mission.title,
+                            total: 0,
+                            url: '',
+                            responseTime: Date.now() - startTime
+                        });
+                    }
+                });
+            });
+
+            state.pendingQueries.delete(queueId);
+            return result;
+
+        } catch (error) {
+            console.error(`查询队列 ${mission.title} 异常:`, error);
+            state.pendingQueries.delete(queueId);
+            return {
+                mid: queueId,
+                title: mission.title,
+                total: 0,
+                url: '',
+                responseTime: Date.now() - startTime
+            };
+        }
+    }
+
+    function fetchQueueList() {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: QUEUE_API.LIST,
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'x-requested-with': 'XMLHttpRequest'
+                },
+                onload: function (response) {
+                    try {
+                        if (response.status === 200) {
+                            const data = JSON.parse(response.responseText);
+                            if (data.status === 'ok' && data.data?.missions) {
+                                resolve(data.data.missions);
+                            } else {
+                                reject(new Error('获取队列列表失败'));
+                            }
+                        } else {
+                            reject(new Error(`HTTP ${response.status}`));
+                        }
+                    } catch (e) {
+                        reject(e);
+                    }
+                },
+                onerror: reject
+            });
+        });
     }
 
     // ========== 配置管理 ==========
@@ -1536,6 +2201,11 @@
                 100% { opacity: 0; transform: translate(-50%, -140%); }
             }
 
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+
             /* 配置工具样式 */
             #ilabel-config-tool * {
                 box-sizing: border-box;
@@ -1694,6 +2364,18 @@
                 padding: 6px 16px;
                 cursor: pointer;
                 font-size: 12px;
+            }
+
+            /* 队列查询弹窗样式 */
+            #ilabel-queue-modal * {
+                box-sizing: border-box;
+            }
+            #ilabel-queue-modal .queue-item {
+                transition: all 0.2s;
+            }
+            #ilabel-queue-modal .queue-item:hover {
+                background-color: #e8e8e8;
+                border-color: #2196f3;
             }
         `);
     }
