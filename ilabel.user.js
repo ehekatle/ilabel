@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         iLabel直播审核辅助3.1.0
+// @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.1.0
-// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询）
+// @version      3.2.1
+// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询-优化版）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
@@ -162,7 +162,7 @@
             addStyles();
 
             // 注册菜单命令
-            GM_registerMenuCommand(`提示配置`, () => {
+            GM_registerMenuCommand(`配置工具`, () => {
                 toggleConfigTool();
             });
 
@@ -1190,7 +1190,7 @@
         return `
             <div class="config-tool-container">
                 <div class="config-tool-header">
-                    <h3>iLabel辅助工具配置 v${SCRIPT_VERSION}</h3>
+                    <h3>iLabel辅助工具配置 ${SCRIPT_VERSION} by ehekatle</h3>
                     <button class="close-btn" id="close-config-btn">×</button>
                 </div>
 
@@ -1938,20 +1938,35 @@
 
     function handleAnswerSubmit(body) {
         try {
+            console.log('========== 开始处理审核提交 ==========');
+            console.log('原始请求体:', body);
+
             const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
-            if (!parsedBody.results) return;
+            console.log('解析后的请求体:', parsedBody);
+
+            if (!parsedBody.results) {
+                console.log('未找到results字段，退出处理');
+                return;
+            }
 
             Object.values(parsedBody.results).forEach(result => {
                 if (!result) return;
 
+                console.log('处理单个审核结果:', result);
+
                 const taskId = result.task_id || '';
                 const liveId = result.live_id || '';
+
+                console.log('任务ID:', taskId);
+                console.log('直播ID:', liveId);
 
                 let operator = '未知操作人';
                 if (result.oper_name && result.oper_name.includes('-')) {
                     operator = result.oper_name.split('-').pop().trim();
+                    console.log('从oper_name提取操作人:', operator, '原始值:', result.oper_name);
                 } else if (result.oper_name) {
                     operator = result.oper_name.trim();
+                    console.log('直接使用操作人:', operator);
                 }
 
                 // 构建结论 - 优先使用 reason_label
@@ -1961,22 +1976,52 @@
 
                 // 从finder_object中提取处罚信息
                 if (result.finder_object && Array.isArray(result.finder_object) && result.finder_object.length > 0) {
-                    const finderItem = result.finder_object[0];
-                    if (finderItem.ext_info) {
-                        // 优先使用 reason_label（最具体的处罚原因）
-                        reasonLabel = finderItem.ext_info.reason_label;
+                    console.log('finder_object存在，长度:', result.finder_object.length);
 
-                        // 如果没有 reason_label，则使用 punish_keyword_path 的最后一个
-                        if (!reasonLabel && finderItem.ext_info.punish_keyword_path && finderItem.ext_info.punish_keyword_path.length > 0) {
+                    const finderItem = result.finder_object[0];
+                    console.log('第一个finder_item:', finderItem);
+
+                    // 策略1：检查 finder_item 本身的 reason_label（优先级最高）
+                    if (finderItem.reason_label) {
+                        reasonLabel = finderItem.reason_label;
+                        console.log('✓ 使用 finder_item.reason_label:', reasonLabel);
+                    }
+                    // 策略2：检查 ext_info 中的 reason_label
+                    else if (finderItem.ext_info) {
+                        console.log('ext_info存在，内容:', JSON.stringify(finderItem.ext_info, null, 2));
+
+                        if (finderItem.ext_info.reason_label) {
+                            reasonLabel = finderItem.ext_info.reason_label;
+                            console.log('✓ 使用 ext_info.reason_label:', reasonLabel);
+                        }
+                        // 策略3：使用 punish_keyword_path
+                        else if (finderItem.ext_info.punish_keyword_path &&
+                            Array.isArray(finderItem.ext_info.punish_keyword_path) &&
+                            finderItem.ext_info.punish_keyword_path.length > 0) {
                             reasonLabel = finderItem.ext_info.punish_keyword_path[finderItem.ext_info.punish_keyword_path.length - 1];
+                            console.log('⚠ 使用 punish_keyword_path 最后一个:', reasonLabel);
+                            console.log('完整的punish_keyword_path:', finderItem.ext_info.punish_keyword_path);
+                        }
+                        // 策略4：使用 punish_keyword
+                        else if (finderItem.ext_info.punish_keyword) {
+                            reasonLabel = finderItem.ext_info.punish_keyword;
+                            console.log('⚠ 使用 punish_keyword:', reasonLabel);
                         }
 
-                        remark = finderItem.remark || null;
+                        console.log('ext_info所有键:', Object.keys(finderItem.ext_info));
                     }
+
+                    remark = finderItem.remark || null;
+                    console.log('备注信息:', remark);
+                } else {
+                    console.log('❌ finder_object不存在或为空');
                 }
 
                 if (reasonLabel) {
                     conclusion = remark ? `${reasonLabel}（${remark}）` : reasonLabel;
+                    console.log('最终结论:', conclusion);
+                } else {
+                    console.log('⚠ 未找到任何处罚标签，使用默认结论:', conclusion);
                 }
 
                 const auditData = {
@@ -1986,12 +2031,15 @@
                     operator: operator
                 };
 
-                console.log('审核结果:', auditData);
+                console.log('审核结果数据:', auditData);
+                console.log('========== 准备推送 ==========');
+
                 sendAnswerPush(auditData);
             });
 
         } catch (error) {
             console.error('处理答案提交失败', error);
+            console.error('错误堆栈:', error.stack);
         }
     }
 
