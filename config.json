@@ -164,18 +164,43 @@
             "老仓库"
         ],
         "popupColor": {
-            "targetedColor": "#000000",
-            "prefilledColor": "#f44336",
-            "exemptedColor": "#4caf50",
-            "reviewColor": "#2196f3",
-            "noteColor": "#90caf9",
-            "penaltyColor": "#ff9800",
-            "complaintColor": "#9e9e9e",
-            "normalColor": "#9e9e9e"
+            "targeted": "#000000",
+            "prefilled": "#f44336",
+            "exempted": "#4caf50",
+            "review": "#2196f3",
+            "note": "#90caf9",
+            "penalty": "#ff9800",
+            "complaint": "#9e9e9e",
+            "normal": "#9e9e9e"
         },
         "pushUrl": {
             "reminderPushUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=90014c35-804f-489e-b203-bf59f46f69fb",
             "answerPushUrl": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=90014c35-804f-489e-b203-bf59f46f69fb"
         }
+    },
+    "validationRules": {
+        "requireProductIdTags": [
+            "金色外观商品暗示为黄金",
+            "镀金商品宣传为足金",
+            "黄金外观制品名称混淆材质",
+            "木作类目错放",
+            "木作材质虚假",
+            "珍珠类目错放",
+            "金色饰品未明确材质",
+            "材质说明标识使用不合规",
+            "镀金商品虚假宣传",
+            "宣传不规范",
+            "疑似材质售假",
+            "银色外观商品暗示为银",
+            "贵金属模糊克重",
+            "银制品异常低价",
+            "宣传材质与实际不符",
+            "宣传其它参数与实际不符",
+            "宣传品牌与实际不符"
+        ],
+        "requireVideoImagePositions": [
+            "主播口播",
+            "直播画面"
+        ]
     }
 }
