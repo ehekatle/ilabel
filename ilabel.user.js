@@ -2155,9 +2155,7 @@
         if (!pushUrl) return;
 
         const timeStr = formatTime24();
-        // 新格式：使用mid_str并添加"队列："前缀
-        const queuePrefix = auditData.mid_str ? `队列：${auditData.mid_str}\n` : '';
-        const content = `${queuePrefix}时间: ${timeStr}\ntask_id: ${auditData.task_id}\nlive_id: ${auditData.live_id}\n结论: ${auditData.conclusion}\n操作人: ${auditData.operator}`;
+        const content = `队列: ${auditData.mid_str}\n审核: ${auditData.operator}（${timeStr}）\ntask_id: ${auditData.task_id}\nlive_id: ${auditData.live_id}\n审核结案: ${auditData.conclusion}`;
 
         GM_xmlhttpRequest({
             method: 'POST',
