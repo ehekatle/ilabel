@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.2.1
-// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询-优化版）
+// @version      3.4.0
+// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证-增强版）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
@@ -75,10 +75,11 @@
         promptSize: 100,
         promptOpacity: 100,
         promptPosition: { x: 100, y: 100 },
-        alarmRing: false
+        alarmRing: false,
+        answerValidation: true // 默认开启答案校验
     };
 
-    // 类型名称映射
+    // 类型名称映射（固定不变）
     const TYPE_NAMES = {
         targeted: '点杀',
         prefilled: '预埋',
@@ -90,17 +91,8 @@
         normal: '普通'
     };
 
-    // 类型颜色映射
-    const TYPE_COLORS = {
-        targeted: '#000000',
-        prefilled: '#f44336',
-        exempted: '#4caf50',
-        review: '#2196f3',
-        note: '#90caf9',
-        penalty: '#ff9800',
-        complaint: '#9e9e9e',
-        normal: '#ffffff'
-    };
+    // 类型颜色映射（将从配置文件加载）
+    let TYPE_COLORS = {};
 
     // ========== 全局状态 ==========
     const state = {
@@ -138,14 +130,13 @@
         isVersionMatched: false,
         isUserInWhitelist: false,
         currentAuditor: '',
-        featuresEnabled: false, // 完整功能是否启用（版本匹配且在白名单）
+        featuresEnabled: false,
         versionCheckDone: false,
         whitelistCheckDone: false
     };
 
     // ========== 版本号匹配函数 ==========
     function versionMatches(pattern, version) {
-        // 如果pattern是*.*.*，直接返回true
         if (pattern === '*.*.*') return true;
 
         const patternParts = pattern.split('.');
@@ -167,10 +158,8 @@
         console.log('iLabel辅助工具: 初始化开始，脚本版本:', SCRIPT_VERSION);
 
         try {
-            // 先加载全局配置（包含版本号和更新地址）
             await loadGlobalConfig();
 
-            // 检查版本匹配
             if (state.globalConfig && state.globalConfig.version) {
                 state.isVersionMatched = versionMatches(state.globalConfig.version, SCRIPT_VERSION);
                 console.log('版本匹配检查:', state.isVersionMatched ? '通过' : '失败',
@@ -182,11 +171,9 @@
 
             state.versionCheckDone = true;
 
-            // 获取当前审核人员信息
             state.currentAuditor = await getAuditorInfo();
             console.log('当前审核人员:', state.currentAuditor || '未知');
 
-            // 检查是否在白名单中（只匹配name）
             if (state.globalConfig?.auditorWhiteList && state.currentAuditor) {
                 state.isUserInWhitelist = state.globalConfig.auditorWhiteList.some(
                     auditor => auditor.name === state.currentAuditor
@@ -197,29 +184,20 @@
             console.log('白名单检查:', state.isUserInWhitelist ? '在白名单中' : '不在白名单中');
 
             state.whitelistCheckDone = true;
-
-            // 功能启用条件：版本匹配 且 在白名单中
             state.featuresEnabled = state.isVersionMatched && state.isUserInWhitelist;
             console.log('功能启用状态:', state.featuresEnabled ? '完整功能' : '仅推送模式');
 
-            // 加载用户配置（即使功能不启用也加载，用于UI显示）
             loadUserConfig();
 
-            // 预加载闹钟音频（但只有功能启用时才使用）
             if (state.featuresEnabled) {
                 preloadAlarmAudio();
-            }
-
-            // 预加载队列列表（但只有功能启用时才使用）
-            if (state.featuresEnabled) {
                 await preloadQueueList();
                 loadQueueCache();
             }
 
-            // 添加样式
             addStyles();
+            syncColorsFromConfig(); // 确保颜色已同步
 
-            // 注册菜单命令（始终注册，但点击后根据状态显示不同内容）
             GM_registerMenuCommand(`配置工具`, () => {
                 toggleConfigTool();
             });
@@ -228,10 +206,7 @@
                 toggleQueueModal();
             });
 
-            // 设置请求拦截（始终拦截，用于推送审核结果）
             setupRequestInterception();
-
-            // 启动配置检查定时器
             startConfigChecker();
 
             console.log('iLabel辅助工具: 初始化完成');
@@ -239,6 +214,35 @@
         } catch (error) {
             console.error('iLabel辅助工具: 初始化失败', error);
         }
+    }
+
+    // ========== 颜色同步函数 ==========
+    function syncColorsFromConfig() {
+        if (state.globalConfig?.popupColor) {
+            TYPE_COLORS = {
+                targeted: state.globalConfig.popupColor.targeted || '#000000',
+                prefilled: state.globalConfig.popupColor.prefilled || '#f44336',
+                exempted: state.globalConfig.popupColor.exempted || '#4caf50',
+                review: state.globalConfig.popupColor.review || '#2196f3',
+                note: state.globalConfig.popupColor.note || '#90caf9',
+                penalty: state.globalConfig.popupColor.penalty || '#ff9800',
+                complaint: state.globalConfig.popupColor.complaint || '#9e9e9e',
+                normal: state.globalConfig.popupColor.normal || '#ffffff'
+            };
+        } else {
+            // 默认颜色（作为后备）
+            TYPE_COLORS = {
+                targeted: '#000000',
+                prefilled: '#f44336',
+                exempted: '#4caf50',
+                review: '#2196f3',
+                note: '#90caf9',
+                penalty: '#ff9800',
+                complaint: '#9e9e9e',
+                normal: '#ffffff'
+            };
+        }
+        console.log('颜色配置已同步', TYPE_COLORS);
     }
 
     // ========== 配置管理 ==========
@@ -271,19 +275,16 @@
         const now = Date.now();
         const lastUpdate = GM_getValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, 0);
 
-        // 如果不是强制刷新，尝试使用缓存
         if (!force && now - lastUpdate < 86400000) {
             const saved = GM_getValue(STORAGE_KEYS.GLOBAL_CONFIG, null);
             if (saved) {
                 try {
                     const cachedConfig = JSON.parse(saved);
-                    // 检查缓存中是否有version字段
                     if (cachedConfig.version) {
                         state.globalConfig = cachedConfig;
+                        syncColorsFromConfig();
                         console.log('使用缓存的全局配置，版本:', cachedConfig.version);
                         return;
-                    } else {
-                        console.log('缓存配置缺少version字段，重新加载');
                     }
                 } catch (e) {
                     console.error('解析缓存的全局配置失败', e);
@@ -296,26 +297,32 @@
             const configText = await fetchConfig();
             const config = JSON.parse(configText);
 
-            // 新格式：版本号和updateUrl与globalConfig同级
             if (config.globalConfig) {
                 state.globalConfig = {
                     ...config.globalConfig,
                     version: config.version || '3.*.*',
-                    updateUrl: config.updateUrl || ''
+                    updateUrl: config.updateUrl || '',
+                    validationRules: config.validationRules || {
+                        requireProductIdTags: [],
+                        requireVideoImagePositions: ['主播口播', '直播画面']
+                    }
                 };
                 GM_setValue(STORAGE_KEYS.GLOBAL_CONFIG, JSON.stringify(state.globalConfig));
                 GM_setValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, now);
+
+                syncColorsFromConfig();
+
                 console.log('全局配置更新成功，版本:', state.globalConfig.version);
             } else {
                 throw new Error('配置文件格式错误');
             }
         } catch (error) {
             console.error('加载全局配置失败', error);
-            // 如果加载失败，尝试使用缓存（即使没有version）
             const cached = GM_getValue(STORAGE_KEYS.GLOBAL_CONFIG, null);
             if (cached) {
                 try {
                     state.globalConfig = JSON.parse(cached);
+                    syncColorsFromConfig();
                     console.log('使用缓存的全局配置（加载失败后）');
                 } catch (e) {
                     console.error('解析缓存配置失败', e);
@@ -351,6 +358,44 @@
                 await loadGlobalConfig();
             }
         }, 3600000);
+    }
+
+    // ========== 统一的提示显示函数 ==========
+    function showValidationToast(messages) {
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 16px 24px;
+            background: rgba(244, 67, 54, 0.95);
+            color: white;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 1000002;
+            animation: fadeInOut 3s ease;
+            max-width: 400px;
+            text-align: center;
+            line-height: 1.6;
+            border: 1px solid rgba(255,255,255,0.2);
+            backdrop-filter: blur(5px);
+        `;
+
+        if (Array.isArray(messages)) {
+            toast.innerHTML = messages.join('<br>');
+        } else {
+            toast.textContent = messages;
+        }
+
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.animation = 'fadeOut 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
     }
 
     // ========== 闹钟音频预加载 ==========
@@ -559,7 +604,6 @@
     function updateConfigToolValues() {
         if (!state.toolContainer) return;
 
-        // 版本不匹配时显示提示条
         const versionWarning = state.toolContainer.querySelector('#version-warning');
         if (versionWarning) {
             if (!state.isVersionMatched && state.globalConfig?.updateUrl) {
@@ -573,7 +617,6 @@
             }
         }
 
-        // 白名单提示
         const whitelistWarning = state.toolContainer.querySelector('#whitelist-warning');
         if (whitelistWarning) {
             if (state.isVersionMatched && !state.isUserInWhitelist) {
@@ -583,7 +626,6 @@
             }
         }
 
-        // 功能未启用时禁用所有配置项
         const configSections = state.toolContainer.querySelectorAll('.config-section, .preview-section, .config-tool-footer');
         configSections.forEach(section => {
             if (!state.featuresEnabled) {
@@ -619,6 +661,14 @@
 
         const alarmSwitch = state.toolContainer.querySelector('#alarm-switch');
         if (alarmSwitch) alarmSwitch.checked = state.userConfig.alarmRing;
+
+        // 答案校验开关
+        const validationSwitch = state.toolContainer.querySelector('#validation-switch');
+        const validationStatus = state.toolContainer.querySelector('#validation-status');
+        if (validationSwitch) {
+            validationSwitch.checked = state.userConfig.answerValidation;
+            if (validationStatus) validationStatus.textContent = state.userConfig.answerValidation ? '开启' : '关闭';
+        }
 
         updatePreview();
     }
@@ -672,7 +722,6 @@
     function buildConfigToolHTML() {
         const selectedTypes = state.userConfig.promptType;
 
-        // 版本不匹配提示（带更新链接）
         const versionWarningHTML = (!state.isVersionMatched && state.globalConfig?.updateUrl) ? `
             <div id="version-warning" class="warning-banner" style="background: #ff5252; color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
                 <span>⚠️ 脚本版本与配置不兼容 (配置版本: ${state.globalConfig?.version || '未知'}, 脚本版本: ${SCRIPT_VERSION})</span>
@@ -680,7 +729,6 @@
             </div>
         ` : '<div id="version-warning" style="display: none;"></div>';
 
-        // 不在白名单提示
         const whitelistWarningHTML = (state.isVersionMatched && !state.isUserInWhitelist) ? `
             <div id="whitelist-warning" class="warning-banner" style="background: #ff9800; color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center;">
                 <span>⚠️ 脚本加载错误</span>
@@ -690,10 +738,11 @@
         let typesHTML = '';
         for (const [type, name] of Object.entries(TYPE_NAMES)) {
             const checked = selectedTypes.includes(type) ? 'checked' : '';
+            const color = TYPE_COLORS[type] || '#000000';
             typesHTML += `
                 <label class="checkbox-item">
                     <input type="checkbox" class="type-checkbox" value="${type}" ${checked} ${!state.featuresEnabled ? 'disabled' : ''}>
-                    <span style="color: ${TYPE_COLORS[type]}">${name}</span>
+                    <span style="color: ${color}">${name}</span>
                 </label>
             `;
         }
@@ -709,7 +758,6 @@
                 ${whitelistWarningHTML}
 
                 <div class="config-tool-body" style="display: flex; gap: 20px;">
-                    <!-- 左侧配置区 -->
                     <div style="flex: 1;">
                         <div class="config-section">
                             <label class="section-label">提示类型：</label>
@@ -753,15 +801,25 @@
                                 <button id="test-alarm-btn" class="test-btn" ${!state.userConfig.alarmRing || !state.featuresEnabled ? 'disabled' : ''}>测试闹钟</button>
                             </div>
                         </div>
+
+                        <div class="config-section" style="margin-top: 15px;">
+                            <label class="section-label">答案校验：</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <label class="switch">
+                                    <input type="checkbox" id="validation-switch" ${state.userConfig.answerValidation ? 'checked' : ''} ${!state.featuresEnabled ? 'disabled' : ''}>
+                                    <span class="slider"></span>
+                                </label>
+                                <span id="validation-status">${state.userConfig.answerValidation ? '开启' : '关闭'}</span>
+                                <span style="font-size: 11px; color: #999; margin-left: 5px;">(开启后将拦截不合规的审核请求)</span>
+                            </div>
+                        </div>
                     </div>
 
-                    <!-- 右侧预览区 -->
                     <div style="width: 220px;">
                         <div class="preview-section">
                             <label class="section-label">预览：</label>
                             <div class="preview-container" style="background: #f5f5f5; padding: 20px 10px; border-radius: 8px;">
                                 <div id="preview-wrapper" class="preview-wrapper ${state.userConfig.promptArrange}" style="justify-content: center; width: 200px;">
-                                    <!-- 预览内容动态生成 -->
                                 </div>
                             </div>
                         </div>
@@ -864,6 +922,17 @@
             testBtn.addEventListener('click', playTestAlarm);
         }
 
+        // 答案校验开关事件
+        const validationSwitch = state.toolContainer.querySelector('#validation-switch');
+        const validationStatus = state.toolContainer.querySelector('#validation-status');
+        if (validationSwitch) {
+            validationSwitch.addEventListener('change', (e) => {
+                const checked = e.target.checked;
+                if (validationStatus) validationStatus.textContent = checked ? '开启' : '关闭';
+                console.log('答案校验开关状态变更为:', checked ? '开启' : '关闭');
+            });
+        }
+
         const resetBtn = state.toolContainer.querySelector('#reset-config-btn');
         if (resetBtn) {
             resetBtn.addEventListener('click', () => {
@@ -890,6 +959,11 @@
                         if (testBtn) testBtn.disabled = !DEFAULT_USER_CONFIG.alarmRing;
                     }
 
+                    if (validationSwitch) {
+                        validationSwitch.checked = DEFAULT_USER_CONFIG.answerValidation;
+                        if (validationStatus) validationStatus.textContent = DEFAULT_USER_CONFIG.answerValidation ? '开启' : '关闭';
+                    }
+
                     state.userConfig.promptPosition = { x: 100, y: 100 };
 
                     updatePreview();
@@ -914,12 +988,14 @@
                 const size = parseInt(sizeSlider?.value || DEFAULT_USER_CONFIG.promptSize);
                 const opacity = parseInt(opacitySlider?.value || DEFAULT_USER_CONFIG.promptOpacity);
                 const alarmRing = alarmSwitch?.checked || false;
+                const answerValidation = validationSwitch?.checked || false;
 
                 state.userConfig.promptType = selectedTypes;
                 state.userConfig.promptArrange = arrange;
                 state.userConfig.promptSize = size;
                 state.userConfig.promptOpacity = opacity;
                 state.userConfig.alarmRing = alarmRing;
+                state.userConfig.answerValidation = answerValidation;
 
                 saveUserConfig();
                 showToast('配置已保存', 'success');
@@ -944,7 +1020,8 @@
 
         let previewHTML = '';
         previewTypes.forEach(type => {
-            previewHTML += `<div class="preview-item" style="background-color: ${TYPE_COLORS[type]}; opacity: ${opacity};">${TYPE_NAMES[type]}</div>`;
+            const color = TYPE_COLORS[type] || '#000000';
+            previewHTML += `<div class="preview-item" style="background-color: ${color}; opacity: ${opacity};">${TYPE_NAMES[type]}</div>`;
         });
         previewHTML += `<div class="preview-item confirm-btn" style="background-color: #f44336; color: white; border: none; opacity: ${opacity};">确认</div>`;
 
@@ -1768,7 +1845,7 @@
     function createTypeTag(type) {
         const tag = document.createElement('div');
         tag.className = 'prompt-tag';
-        const color = TYPE_COLORS[type] || TYPE_COLORS.normal;
+        const color = TYPE_COLORS[type] || TYPE_COLORS.normal || '#ffffff';
         const textColor = getContrastColor(color);
 
         tag.style.cssText = `
@@ -1867,7 +1944,6 @@
     }
 
     function startPushTimer() {
-        // 只有功能启用时才发送未确认提醒
         if (!state.featuresEnabled) return;
         if (!state.globalConfig?.pushUrl?.reminderPushUrl || !state.userConfig.alarmRing) return;
 
@@ -1884,7 +1960,6 @@
     }
 
     function sendReminderPush() {
-        // 只有功能启用时才发送未确认提醒
         if (!state.featuresEnabled) return;
 
         const pushUrl = state.globalConfig?.pushUrl?.reminderPushUrl;
@@ -2026,7 +2101,6 @@
 
             state.currentLiveData = liveData;
 
-            // 只有功能启用时才检测类型和显示提示
             if (state.featuresEnabled) {
                 const types = checkAllTypes(liveData);
                 state.currentTypes = types;
@@ -2058,6 +2132,136 @@
                 return;
             }
 
+            // 检查答案校验开关
+            if (!state.userConfig.answerValidation) {
+                console.log('答案校验已关闭，跳过验证直接处理');
+                // 直接进入原有的审核结果处理逻辑
+                processAnswerResults(parsedBody);
+                return;
+            }
+
+            console.log('========== 开始答案校验 ==========');
+
+            // 获取验证规则
+            const validationRules = state.globalConfig?.validationRules || {
+                requireProductIdTags: [],
+                requireVideoImagePositions: ['主播口播', '直播画面']
+            };
+
+            console.log('验证规则:', validationRules);
+
+            // 遍历所有审核结果进行验证
+            const validationErrors = [];
+
+            Object.values(parsedBody.results).forEach(result => {
+                if (!result) return;
+
+                console.log('校验单个审核结果:', {
+                    task_id: result.task_id,
+                    live_id: result.live_id,
+                    mid_str: result.mid_str
+                });
+
+                const finderItem = result.finder_object?.[0];
+                if (!finderItem) {
+                    console.log('未找到finder_object，跳过校验');
+                    return;
+                }
+
+                const reasonLabel = finderItem.reason_label ||
+                    finderItem.ext_info?.reason_label ||
+                    (finderItem.ext_info?.punish_keyword_path?.[finderItem.ext_info.punish_keyword_path.length - 1]);
+
+                const punishContent = finderItem.ext_info?.punish_content;
+                const productId = finderItem.ext_info?.product_id;
+                const imgUrls = finderItem.img_url || [];
+                const clipTimes = finderItem.clip_times || [];
+                const remark = finderItem.remark;
+
+                console.log('校验数据:', {
+                    reasonLabel,
+                    punishContent,
+                    productId,
+                    imgUrlsCount: imgUrls.length,
+                    clipTimesCount: clipTimes.length,
+                    remark
+                });
+
+                const errors = [];
+
+                // 验证1：需要商品ID的标签
+                if (reasonLabel && validationRules.requireProductIdTags.includes(reasonLabel)) {
+                    console.log(`检查商品ID: 标签"${reasonLabel}"需要商品ID`);
+                    if (!productId || (Array.isArray(productId) && productId.length === 0)) {
+                        errors.push('该标签需提供商品id');
+                        console.log('❌ 商品ID缺失');
+                    } else {
+                        console.log('✓ 商品ID存在');
+                    }
+                }
+
+                // 验证2：违规位置需要视频/图片证据
+                if (punishContent && validationRules.requireVideoImagePositions.includes(punishContent)) {
+                    console.log(`检查证据: 违规位置"${punishContent}"需要视频/图片证据`);
+                    if ((!clipTimes || clipTimes.length === 0) &&
+                        (!imgUrls || imgUrls.length === 0)) {
+                        errors.push('视频/图片证据不能为空');
+                        console.log('❌ 视频/图片证据缺失');
+                    } else {
+                        console.log('✓ 视频/图片证据存在');
+                    }
+                }
+
+                // 验证3：有处罚标签就需要图片证据和违规备注
+                if (reasonLabel) {
+                    console.log(`检查图片和备注: 有处罚标签"${reasonLabel}"`);
+                    if (!imgUrls || imgUrls.length === 0) {
+                        errors.push('图片证据不能为空');
+                        console.log('❌ 图片证据缺失');
+                    } else {
+                        console.log('✓ 图片证据存在');
+                    }
+                    if (!remark || remark.trim() === '') {
+                        errors.push('违规备注不能为空');
+                        console.log('❌ 违规备注缺失');
+                    } else {
+                        console.log('✓ 违规备注存在');
+                    }
+                }
+
+                if (errors.length > 0) {
+                    console.log('校验失败，错误:', errors);
+                    validationErrors.push(...errors);
+                } else {
+                    console.log('✓ 校验通过');
+                }
+            });
+
+            // 如果有验证错误，拦截请求并显示提示
+            if (validationErrors.length > 0) {
+                const uniqueErrors = [...new Set(validationErrors)]; // 去重
+                console.log('========== 答案校验失败 ==========');
+                console.log('拦截原因:', uniqueErrors);
+                showValidationToast(uniqueErrors);
+                return; // 不发送推送，也不关闭提示
+            }
+
+            console.log('========== 答案校验通过 ==========');
+
+            // 验证通过，处理审核结果
+            processAnswerResults(parsedBody);
+
+        } catch (error) {
+            console.error('处理答案提交失败', error);
+            console.error('错误堆栈:', error.stack);
+        }
+    }
+
+    // 新增：处理审核结果的函数
+    function processAnswerResults(parsedBody) {
+        try {
+            console.log('========== 开始处理审核结果 ==========');
+
             Object.values(parsedBody.results).forEach(result => {
                 if (!result) return;
 
@@ -2065,7 +2269,6 @@
 
                 const taskId = result.task_id || '';
                 const liveId = result.live_id || '';
-                // 从结果中获取mid_str（与finder_object同级）
                 const midStr = result.mid_str || '';
 
                 console.log('任务ID:', taskId);
@@ -2107,20 +2310,15 @@
                             finderItem.ext_info.punish_keyword_path.length > 0) {
                             reasonLabel = finderItem.ext_info.punish_keyword_path[finderItem.ext_info.punish_keyword_path.length - 1];
                             console.log('⚠ 使用 punish_keyword_path 最后一个:', reasonLabel);
-                            console.log('完整的punish_keyword_path:', finderItem.ext_info.punish_keyword_path);
                         }
                         else if (finderItem.ext_info.punish_keyword) {
                             reasonLabel = finderItem.ext_info.punish_keyword;
                             console.log('⚠ 使用 punish_keyword:', reasonLabel);
                         }
-
-                        console.log('ext_info所有键:', Object.keys(finderItem.ext_info));
                     }
 
                     remark = finderItem.remark || null;
                     console.log('备注信息:', remark);
-                } else {
-                    console.log('❌ finder_object不存在或为空');
                 }
 
                 if (reasonLabel) {
@@ -2143,10 +2341,8 @@
 
                 sendAnswerPush(auditData);
             });
-
         } catch (error) {
-            console.error('处理答案提交失败', error);
-            console.error('错误堆栈:', error.stack);
+            console.error('处理审核结果失败', error);
         }
     }
 
@@ -2155,7 +2351,7 @@
         if (!pushUrl) return;
 
         const timeStr = formatTime24();
-        const content = `队列: ${auditData.mid_str}\n审核: ${auditData.operator}（${timeStr}）\ntask_id: ${auditData.task_id}\nlive_id: ${auditData.live_id}\n审核结案: ${auditData.conclusion}`;
+        const content = `队列：${auditData.mid_str}\n审核：${auditData.operator}（${timeStr}）\ntaskID：${auditData.task_id}\nliveID：${auditData.live_id}\n审核结案：${auditData.conclusion}`;
 
         GM_xmlhttpRequest({
             method: 'POST',
@@ -2166,7 +2362,6 @@
             onload: (r) => {
                 if (r.status === 200) {
                     console.log('答案推送成功');
-                    // 只有功能启用时才关闭提示
                     if (state.featuresEnabled) {
                         closePrompt();
                     }
@@ -2357,6 +2552,11 @@
                 20% { opacity: 1; transform: translate(-50%, -50%); }
                 80% { opacity: 1; transform: translate(-50%, -50%); }
                 100% { opacity: 0; transform: translate(-50%, -140%); }
+            }
+
+            @keyframes fadeOut {
+                from { opacity: 1; transform: translate(-50%, -50%); }
+                to { opacity: 0; transform: translate(-50%, -40%); }
             }
 
             @keyframes spin {
