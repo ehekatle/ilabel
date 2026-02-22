@@ -1,4 +1,6 @@
 {
+    "version": "3.*.*",
+    "updateUrl": "https://www.tampermonkey.net/script_installation.php#url=https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js",
     "globalConfig": {
         "auditorWhiteList": [
             {
