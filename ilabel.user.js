@@ -2458,11 +2458,29 @@
             if (response.ok) {
                 const data = await response.json();
                 if (data.status === 'ok' && data.data?.name) {
-                    const nameParts = data.data.name.split('-');
-                    return nameParts.length > 1 ? nameParts[1].trim() : data.data.name.trim();
+                    // 原有逻辑：处理包含"-"的情况
+                    let name = data.data.name;
+                    if (name.includes('-')) {
+                        name = name.split('-').pop().trim();
+                    } else {
+                        name = name.trim();
+                    }
+
+                    // 新增：只提取中文字符（去除所有非中文字符，包括点号、空格等）
+                    const chineseName = name.replace(/[^\u4e00-\u9fa5]/g, '');
+
+                    console.log('审核员名字处理:', {
+                        原始: data.data.name,
+                        原有逻辑后: name,
+                        提取中文后: chineseName
+                    });
+
+                    return chineseName;
                 }
             }
-        } catch (e) { }
+        } catch (e) {
+            console.error('获取审核员信息失败', e);
+        }
         return '';
     }
 
