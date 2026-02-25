@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         百灵工作量快速提交工具
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  在工作量管理页面添加批量查询和提交功能
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
@@ -93,6 +93,33 @@
             background: rgba(0, 0, 0, 0.05);
         }
 
+        /* 用户信息栏 */
+        .user-info {
+            background: #e6f7ff;
+            border: 1px solid #91d5ff;
+            border-radius: 4px;
+            padding: 8px 16px;
+            margin-bottom: 16px;
+            color: #0050b3;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .user-info-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .user-info-label {
+            color: #666;
+            font-weight: 500;
+        }
+        .user-info-value {
+            color: #1890ff;
+            font-weight: 600;
+        }
+
         /* 弹窗内容 */
         .modal-content {
             padding: 24px;
@@ -105,7 +132,7 @@
             display: flex;
             align-items: center;
             gap: 12px;
-            margin-bottom: 24px;
+            margin-bottom: 16px;
             background: #f8f9fa;
             padding: 16px 20px;
             border-radius: 8px;
@@ -317,26 +344,66 @@
     // 存储任务列表的缓存
     let tasksCache = [];
     let isFetchingTasks = false;
-    let modalInitialized = false;
+    let currentUserInfo = null;
 
-    // 获取当前用户的auditUser
-    function getAuditUser() {
-        // 从cookie中获取openid
+    // 获取当前用户信息（通过GetWechatMembers接口）
+    async function fetchCurrentUserInfo() {
+        try {
+            console.log('正在获取用户信息...');
+
+            const response = await fetch('https://ocean.cdposs.qq.com/api/trpc/WorkforceManageProxy/GetWechatMembers', {
+                method: 'POST',
+                headers: {
+                    'accept': 'application/json, text/plain, */*',
+                    'content-type': 'application/json; charset=UTF-8',
+                    'x-requested-with': 'XMLHttpRequest'
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                    data: {}
+                })
+            });
+
+            const result = await response.json();
+            if (result.code === 0 && result.data && result.data.members && result.data.members.length > 0) {
+                currentUserInfo = result.data.members[0];
+                console.log('获取到用户信息:', currentUserInfo);
+                return currentUserInfo;
+            } else {
+                console.error('获取用户信息失败:', result.msg);
+                return null;
+            }
+        } catch (error) {
+            console.error('获取用户信息失败:', error);
+            return null;
+        }
+    }
+
+    // 获取auditUser（优先从用户信息中获取ouid）
+    async function getAuditUser() {
+        // 如果已有用户信息，直接返回ouid
+        if (currentUserInfo && currentUserInfo.ouid) {
+            return currentUserInfo.ouid;
+        }
+
+        // 否则尝试获取用户信息
+        const userInfo = await fetchCurrentUserInfo();
+        if (userInfo && userInfo.ouid) {
+            return userInfo.ouid;
+        }
+
+        // 最后尝试从cookie获取openid作为后备
         const cookies = document.cookie.split(';');
         for (let cookie of cookies) {
             const [key, value] = cookie.trim().split('=');
             if (key === 'openid') {
-                console.log('获取到openid:', value);
+                console.warn('使用openid作为auditUser:', value);
                 return value;
             }
         }
-        // 如果找不到，从页面中查找
-        const userInfo = document.querySelector('[data-userid]');
-        if (userInfo) {
-            return userInfo.getAttribute('data-userid');
-        }
-        // 返回示例中的值作为后备
-        console.warn('未找到openid，使用默认值');
+
+        // 返回示例中的值作为最后的后备
+        console.error('无法获取用户信息，使用默认值');
         return '2000000010626';
     }
 
@@ -369,7 +436,7 @@
 
         isFetchingTasks = true;
         try {
-            const auditUser = getAuditUser();
+            const auditUser = await getAuditUser();
             console.log('开始获取任务列表, auditUser:', auditUser);
 
             const response = await fetch('https://ocean.cdposs.qq.com/api/trpc/WorkforceClientProxy/QueryVisibleTasks', {
@@ -441,7 +508,7 @@
     // 查询单个任务的摘要
     async function queryTaskSummary(taskId, reportDate) {
         try {
-            const auditUser = getAuditUser();
+            const auditUser = await getAuditUser();
 
             const response = await fetch('https://ocean.cdposs.qq.com/api/v2/trpc?feService=QueryTaskSummary', {
                 method: 'POST',
@@ -508,7 +575,7 @@
     // 提交工作量数据
     async function submitWorkData(tasks, reportDateStr) {
         try {
-            const auditUser = getAuditUser();
+            const auditUser = await getAuditUser();
             const submitDate = formatSubmitTimestamp(reportDateStr);
 
             // 过滤出auditQuantity不为0的任务
@@ -571,7 +638,8 @@
         document.body.appendChild(loadingOverlay);
 
         try {
-            // 获取任务列表缓存
+            // 获取用户信息和任务列表
+            await fetchCurrentUserInfo();
             await fetchTasksList();
 
             // 移除加载遮罩
@@ -603,8 +671,27 @@
         const content = document.createElement('div');
         content.className = 'modal-content';
 
+        // 用户信息显示
+        const userInfoHtml = currentUserInfo ? `
+            <div class="user-info">
+                <div class="user-info-item">
+                    <span class="user-info-label">姓名：</span>
+                    <span class="user-info-value">${currentUserInfo.name || '未知'}</span>
+                </div>
+                <div class="user-info-item">
+                    <span class="user-info-label">用户ID：</span>
+                    <span class="user-info-value">${currentUserInfo.userId || '未知'}</span>
+                </div>
+                <div class="user-info-item">
+                    <span class="user-info-label">OUID：</span>
+                    <span class="user-info-value">${currentUserInfo.ouid || '未知'}</span>
+                </div>
+            </div>
+        ` : '';
+
         // 初始内容
         content.innerHTML = `
+            ${userInfoHtml}
             <div class="query-section">
                 <input type="date" class="date-picker" value="${getTodayString()}">
                 <button class="action-btn query-btn">查询</button>
