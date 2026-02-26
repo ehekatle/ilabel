@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍭 一万颗糖果 · 小朋友的数字乐园 🍬</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            /* 防止小朋友误选文字 */
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: linear-gradient(145deg, #ffdde1 0%, #f9cfb5 100%);
+            font-family: 'Segoe UI', 'Comic Sans MS', 'Chalkboard SE', cursive, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 12px;
+        }
+
+        .game-box {
+            max-width: 1100px;
+            width: 100%;
+            background: #fff5e6;
+            border-radius: 70px 70px 50px 50px;
+            box-shadow: 0 20px 30px rgba(0, 0, 0, 0.15), 0 8px 0 #f5b27a inset, 0 -6px 0 #d8935a inset;
+            padding: 25px 20px 30px 20px;
+            border: 6px solid #feca7e;
+        }
+
+        /* 标题区 */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .header h1 {
+            font-size: 2.8rem;
+            color: #a0432b;
+            text-shadow: 4px 4px 0 #ffaa5e;
+            margin: 0;
+            letter-spacing: 1px;
+        }
+
+        .crown {
+            font-size: 3.2rem;
+            filter: drop-shadow(2px 4px 0 #e67e22);
+        }
+
+        /* ========= 操 作 区 域 (置顶) ========= */
+        .control-panel {
+            background: #f8d5a3;
+            border-radius: 70px 70px 40px 40px;
+            padding: 20px 20px 20px 20px;
+            margin: 0 0 20px 0;
+            border: 5px solid #f0a64a;
+            box-shadow: inset 0 -5px 0 #c07d38, 0 12px 0 #936c34;
+        }
+
+        .slider-area {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            background: #ffeac2;
+            padding: 12px 25px;
+            border-radius: 60px;
+            border: 4px solid #f5b04b;
+            margin-bottom: 18px;
+        }
+
+        .slider-label {
+            font-size: 2rem;
+            background: #b45f2b;
+            color: white;
+            padding: 8px 25px;
+            border-radius: 50px;
+            box-shadow: 0 6px 0 #784324;
+        }
+
+        input[type=range] {
+            flex: 2;
+            min-width: 260px;
+            height: 24px;
+            background: #ffe5b4;
+            border-radius: 40px;
+            -webkit-appearance: none;
+            appearance: none;
+            border: 4px solid #ad6329;
+        }
+
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 44px;
+            height: 44px;
+            background: #ffc489;
+            border-radius: 50%;
+            border: 5px solid #c7591e;
+            box-shadow: 0 6px 0 #85431b;
+            cursor: pointer;
+            transition: 0.05s;
+        }
+
+        .number-badge {
+            background: #3fa38f;
+            color: white;
+            font-size: 2.4rem;
+            font-weight: bold;
+            padding: 10px 30px;
+            border-radius: 70px;
+            border: 4px solid #1f7561;
+            box-shadow: 0 8px 0 #145344;
+            min-width: 160px;
+            text-align: center;
+        }
+
+        /* 按钮组 */
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 14px;
+            margin-top: 8px;
+        }
+
+        .cool-btn {
+            background: #fada7a;
+            border: none;
+            font-size: 1.9rem;
+            font-weight: bold;
+            padding: 12px 28px;
+            border-radius: 70px;
+            color: #3d2b10;
+            border: 5px solid #d68f3a;
+            box-shadow: 0 8px 0 #a56622;
+            cursor: pointer;
+            transition: 0.07s linear;
+            font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            line-height: 1;
+        }
+
+        .cool-btn:active {
+            transform: translateY(8px);
+            box-shadow: 0 2px 0 #a56622;
+        }
+
+        .cool-btn.reset-btn {
+            background: #ffb482;
+            color: #2d1b07;
+        }
+
+        .cool-btn.full-btn {
+            background: #fdba6a;
+        }
+
+        /* 大数字招牌 (放在操作区下方，更醒目) */
+        .big-number {
+            background: #fbe1b0;
+            border-radius: 90px;
+            padding: 12px 20px;
+            margin: 5px 5px 15px 5px;
+            border: 5px solid #e7ad6b;
+            box-shadow: inset 0 -5px 0 #c7924b, 0 10px 0 #936c34;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .digit-group {
+            background: #fee3b8;
+            padding: 8px 22px;
+            border-radius: 60px;
+            font-size: 2.8rem;
+            font-weight: bold;
+            color: #5e2f0c;
+            border: 4px solid #ffa726;
+            box-shadow: inset 0 -3px 0 #b4772a;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .digit-group span {
+            line-height: 1;
+        }
+
+        .comma {
+            font-size: 3.2rem;
+            color: #e67e22;
+            margin: 0 4px;
+        }
+
+        .explain-word {
+            font-size: 1.9rem;
+            background: #b1d0e8;
+            padding: 8px 25px;
+            border-radius: 50px;
+            color: #1f4a5c;
+            border: 4px solid #457b9d;
+            font-weight: 600;
+            box-shadow: 0 7px 0 #2c5a77;
+        }
+
+        /* ========= 糖 果 网 格 ========= */
+        .grid-container {
+            background: #f5d5a9;
+            border-radius: 60px;
+            padding: 20px 18px 18px 18px;
+            margin: 5px 0 0 0;
+            border: 5px solid #cb9e6b;
+            box-shadow: inset 0 -5px 0 #a47e4b, 0 12px 0 #7b623a;
+        }
+
+        .grid-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin: 0 5px 15px 5px;
+            font-size: 1.6rem;
+            color: #4d2b0e;
+            background: #ffdd9e;
+            padding: 6px 20px;
+            border-radius: 60px;
+            border: 3px solid #bb8f4f;
+        }
+
+        .counter {
+            background: #aad6c7;
+            padding: 8px 25px;
+            border-radius: 40px;
+            font-weight: 700;
+            color: #035c3f;
+            font-size: 2.1rem;
+            border: 3px solid #118a5e;
+            box-shadow: inset 0 -4px 0 #0b5e41;
+        }
+
+        .grid-hint {
+            font-size: 1.5rem;
+            background: #ffd89c;
+            padding: 5px 18px;
+            border-radius: 40px;
+        }
+
+        /* 糖果网格 —— 每个糖果使用emoji字体方案 */
+        .candies-grid {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: flex-start;
+            align-items: center;
+            gap: 6px;
+            background: #fff0cf;
+            padding: 30px 18px;
+            border-radius: 48px;
+            border: 4px solid #cf9f5a;
+            min-height: 200px;
+            max-height: 450px;
+            overflow-y: auto;
+            /* 糖果太多时可以滚动 */
+            font-size: 1.8rem;
+            /* 控制糖果大小 */
+            line-height: 1;
+        }
+
+        /* 真正的糖果 —— 用纯文本图标，更可爱、不会变形，且支持所有设备 */
+        .candy {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.2rem;
+            /* 调节糖果图标大小 */
+            width: 34px;
+            height: 34px;
+            filter: drop-shadow(0 4px 2px rgba(0, 0, 0, 0.2));
+            transition: 0.1s ease;
+            flex-shrink: 0;
+            transform: rotate(0deg);
+        }
+
+        /* 偶尔让糖果旋转一点点，更俏皮 */
+        .candy:nth-child(5n) {
+            transform: rotate(5deg);
+        }
+
+        .candy:nth-child(7n+3) {
+            transform: rotate(-5deg);
+        }
+
+        /* 小脚注 */
+        .footnote {
+            text-align: center;
+            font-size: 1.5rem;
+            color: #9b5e2b;
+            margin-top: 20px;
+            background: #ffdcb5;
+            padding: 8px 25px;
+            border-radius: 100px;
+            display: inline-block;
+            margin-left: auto;
+            margin-right: auto;
+            width: fit-content;
+            border: 3px solid #b57939;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="game-box">
+        <div class="header">
+            <span class="crown">🍬</span>
+            <h1>一 万 颗 糖 果</h1>
+            <span class="crown">🍭</span>
+        </div>
+
+        <!-- ********** 操 作 区 域 置 顶 ********** -->
+        <div class="control-panel">
+            <div class="slider-area">
+                <span class="slider-label">🍬 拖动我</span>
+                <input type="range" id="candySlider" min="0" max="10000" value="0" step="100">
+                <span class="number-badge" id="sliderValue">0</span>
+            </div>
+
+            <div class="button-group">
+                <button class="cool-btn" id="addHundredBtn">➕ 加100</button>
+                <button class="cool-btn" id="addThousandBtn">➕ 加1000</button>
+                <button class="cool-btn" id="halfBtn">🔢 一半</button>
+                <button class="cool-btn reset-btn" id="resetBtn">🧽 清空</button>
+                <button class="cool-btn full-btn" id="fullBtn">🌟 装满一万</button>
+            </div>
+        </div>
+
+        <!-- 大数字招牌 (仍在操作区下方，方便对照) -->
+        <div class="big-number">
+            <div class="digit-group">
+                <span>1</span><span>0</span><span>,</span><span>0</span><span>0</span><span>0</span>
+            </div>
+            <span class="explain-word">= 10000 颗糖果</span>
+        </div>
+
+        <!-- 糖果网格区 -->
+        <div class="grid-container">
+            <div class="grid-label">
+                <span class="grid-hint">🍇 每一颗都是甜甜的糖果 🍬</span>
+                <span class="counter" id="candyCounter">0 / 10000</span>
+            </div>
+            <div id="candiesGrid" class="candies-grid">
+                <!-- 糖果们会由js动态生成 -->
+            </div>
+        </div>
+
+        <div class="footnote">
+            💡 每个糖果 = 1，全部 10000 颗糖果 = 一万！
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            // 获取元素
+            const candiesGrid = document.getElementById('candiesGrid');
+            const candyCounter = document.getElementById('candyCounter');
+            const slider = document.getElementById('candySlider');
+            const sliderValue = document.getElementById('sliderValue');
+
+            const MAX_CANDIES = 10000;
+            let currentCandies = 0;
+
+            // 可爱的糖果图标数组 —— 混合多种糖果，更丰富有趣
+            const candyIcons = ['🍬', '🍭', '🍡', '🍫', '🍩', '🍪', '🧁', '🍰', '🍒', '🍇', '🍓', '🍊', '🍉', '🍎', '🥝', '🍑'];
+
+            // 渲染糖果
+            function renderCandies(targetCount) {
+                let count = Math.min(MAX_CANDIES, Math.max(0, Math.round(targetCount)));
+                currentCandies = count;
+
+                // 生成糖果 HTML —— 每个糖果从数组中随机选一个图标，让画面五彩缤纷
+                let candiesHtml = '';
+                for (let i = 0; i < count; i++) {
+                    // 随机挑选一个糖果图标，让孩子觉得每一颗都不同
+                    const randomIndex = Math.floor(Math.random() * candyIcons.length);
+                    const icon = candyIcons[randomIndex];
+                    candiesHtml += `<span class="candy">${icon}</span>`;
+                }
+                candiesGrid.innerHTML = candiesHtml;
+
+                // 更新计数器 与 滑动条数值
+                candyCounter.innerText = currentCandies + ' / 10000';
+                slider.value = currentCandies;
+                sliderValue.innerText = currentCandies;
+            }
+
+            // 事件监听: 滑动条
+            slider.addEventListener('input', function (e) {
+                const val = parseInt(e.target.value, 10);
+                renderCandies(val);
+            });
+
+            // 加100
+            document.getElementById('addHundredBtn').addEventListener('click', function () {
+                let newVal = currentCandies + 100;
+                if (newVal > MAX_CANDIES) newVal = MAX_CANDIES;
+                renderCandies(newVal);
+            });
+
+            // 加1000
+            document.getElementById('addThousandBtn').addEventListener('click', function () {
+                let newVal = currentCandies + 1000;
+                if (newVal > MAX_CANDIES) newVal = MAX_CANDIES;
+                renderCandies(newVal);
+            });
+
+            // 一半
+            document.getElementById('halfBtn').addEventListener('click', function () {
+                let newVal = Math.floor(currentCandies / 2);
+                renderCandies(newVal);
+            });
+
+            // 清空
+            document.getElementById('resetBtn').addEventListener('click', function () {
+                renderCandies(0);
+            });
+
+            // 装满一万
+            document.getElementById('fullBtn').addEventListener('click', function () {
+                renderCandies(MAX_CANDIES);
+            });
+
+            // 初始化: 显示0颗糖果
+            renderCandies(0);
+
+            // 额外小优化: 当糖果数量巨大时（如10000），浏览器渲染几千个span没有问题。为了更流畅，可以加个限制，但现代设备完全ok。
+            // 糖果图标随机, 每次渲染都会重新随机, 让小朋友每次调整数量都能看到新的糖果组合
+        })();
+    </script>
+</body>
+
+</html>
