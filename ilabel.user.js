@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.4.0
+// @version      3.4.1
 // @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证-增强版）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
@@ -2005,35 +2005,59 @@
         const originalFetch = window.fetch;
         window.fetch = function (...args) {
             const url = args[0];
+            const options = args[1] || {};
 
-            if (typeof url === 'string') {
-                if (url.includes('get_live_info_batch')) {
-                    return originalFetch.apply(this, args).then(response => {
-                        if (response.ok) {
-                            response.clone().json().then(data => {
-                                if (data.ret === 0 && data.liveInfoList?.length > 0) {
-                                    handleLiveInfo(data.liveInfoList[0]);
-                                }
-                            }).catch(() => { });
-                        }
-                        return response;
-                    });
-                }
+            // 拦截答案提交请求 - 在发送前进行验证
+            if (typeof url === 'string' && url.includes('/api/answers') && options.method === 'POST') {
 
-                if (url.includes('/api/answers') && args[1]?.method === 'POST') {
-                    return originalFetch.apply(this, args).then(response => {
-                        if (response.ok) {
-                            response.clone().json().then(data => {
-                                if (data.status === 'ok') {
-                                    handleAnswerSubmit(args[1]?.body);
-                                }
-                            }).catch(() => { });
-                        }
-                        return response;
-                    });
+                // 在请求发送前进行验证
+                try {
+                    const body = options.body;
+                    console.log('拦截到答案提交请求，开始前置验证');
+
+                    // 调用验证函数
+                    const validationResult = validateAnswerSubmit(body);
+
+                    // 如果验证失败，阻止请求发送
+                    if (!validationResult.valid) {
+                        console.log('验证失败，阻止请求发送', validationResult.errors);
+
+                        // 显示提示
+                        showValidationToast(validationResult.errors);
+
+                        // 返回一个被拒绝的Promise，阻止请求发送
+                        return Promise.reject(new Error('验证失败：' + validationResult.errors.join(', ')));
+                    }
+
+                    console.log('验证通过，允许请求发送');
+                } catch (error) {
+                    console.error('验证过程出错', error);
+                    // 出错时也阻止请求，避免不完整的请求发送
+                    return Promise.reject(error);
                 }
             }
-            return originalFetch.apply(this, args);
+
+            // 验证通过或非答案提交请求，正常发送
+            return originalFetch.apply(this, args).then(response => {
+                // 后续处理（用于推送等）
+                if (typeof url === 'string' && url.includes('/api/answers') && response.ok) {
+                    response.clone().json().then(data => {
+                        if (data.status === 'ok') {
+                            // 注意：这里使用原始的body，因为options.body可能已经被消费
+                            handleAnswerSubmit(options.body);
+                        }
+                    }).catch(() => { });
+                }
+                return response;
+            }).catch(error => {
+                // 如果是我们主动拒绝的请求，不打印错误堆栈
+                if (error.message && error.message.startsWith('验证失败：')) {
+                    console.log('请求已被拦截:', error.message);
+                } else {
+                    // 其他错误正常抛出
+                    throw error;
+                }
+            });
         };
 
         const originalOpen = XMLHttpRequest.prototype.open;
@@ -2047,6 +2071,38 @@
 
         XMLHttpRequest.prototype.send = function (body) {
             const xhr = this;
+
+            // 拦截答案提交请求 - 在发送前进行验证
+            if (xhr._method === 'POST' && xhr._url && xhr._url.includes('/api/answers')) {
+
+                // 在请求发送前进行验证
+                try {
+                    console.log('拦截到XHR答案提交请求，开始前置验证');
+
+                    const validationResult = validateAnswerSubmit(body);
+
+                    if (!validationResult.valid) {
+                        console.log('验证失败，阻止XHR请求发送', validationResult.errors);
+
+                        // 显示提示
+                        showValidationToast(validationResult.errors);
+
+                        // 模拟一个错误响应
+                        setTimeout(() => {
+                            xhr.dispatchEvent(new ProgressEvent('error'));
+                        }, 0);
+
+                        // 阻止请求发送
+                        return;
+                    }
+
+                    console.log('验证通过，允许XHR请求发送');
+                } catch (error) {
+                    console.error('验证过程出错', error);
+                    // 阻止请求发送
+                    return;
+                }
+            }
 
             if (xhr._url && xhr._url.includes('get_live_info_batch')) {
                 xhr.addEventListener('load', () => {
@@ -2075,6 +2131,82 @@
             }
 
             return originalSend.call(this, body);
+        };
+    }
+
+    // ========== 答案验证函数（独立，用于前置拦截） ==========
+    function validateAnswerSubmit(body) {
+        const errors = [];
+
+        try {
+            const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
+
+            if (!parsedBody.results) {
+                return { valid: true, errors: [] }; // 没有results，跳过验证
+            }
+
+            // 检查答案校验开关
+            if (!state.userConfig.answerValidation) {
+                return { valid: true, errors: [] };
+            }
+
+            // 获取验证规则
+            const validationRules = state.globalConfig?.validationRules || {
+                requireProductIdTags: [],
+                requireVideoImagePositions: ['主播口播', '直播画面']
+            };
+
+            // 遍历所有审核结果进行验证
+            Object.values(parsedBody.results).forEach(result => {
+                if (!result) return;
+
+                const finderItem = result.finder_object?.[0];
+                if (!finderItem) return;
+
+                const reasonLabel = finderItem.reason_label ||
+                    finderItem.ext_info?.reason_label ||
+                    (finderItem.ext_info?.punish_keyword_path?.[finderItem.ext_info.punish_keyword_path.length - 1]);
+
+                const punishContent = finderItem.ext_info?.punish_content;
+                const productId = finderItem.ext_info?.product_id;
+                const imgUrls = finderItem.img_url || [];
+                const clipTimes = finderItem.clip_times || [];
+                const remark = finderItem.remark;
+
+                // 验证1：需要商品ID的标签
+                if (reasonLabel && validationRules.requireProductIdTags.includes(reasonLabel)) {
+                    if (!productId || (Array.isArray(productId) && productId.length === 0)) {
+                        errors.push('该标签需提供商品id');
+                    }
+                }
+
+                // 验证2：违规位置需要视频/图片证据
+                if (punishContent && validationRules.requireVideoImagePositions.includes(punishContent)) {
+                    if ((!clipTimes || clipTimes.length === 0) &&
+                        (!imgUrls || imgUrls.length === 0)) {
+                        errors.push('视频/图片证据不能为空');
+                    }
+                }
+
+                // 验证3：有处罚标签就需要图片证据和违规备注
+                if (reasonLabel) {
+                    if (!imgUrls || imgUrls.length === 0) {
+                        errors.push('图片证据不能为空');
+                    }
+                    if (!remark || remark.trim() === '') {
+                        errors.push('违规备注不能为空');
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.error('验证解析失败', error);
+            return { valid: true, errors: [] }; // 解析失败时不阻止请求
+        }
+
+        return {
+            valid: errors.length === 0,
+            errors: [...new Set(errors)] // 去重
         };
     }
 
@@ -2121,7 +2253,7 @@
 
     function handleAnswerSubmit(body) {
         try {
-            console.log('========== 开始处理审核提交 ==========');
+            console.log('========== 开始处理审核结果 ==========');
             console.log('原始请求体:', body);
 
             const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
@@ -2131,122 +2263,6 @@
                 console.log('未找到results字段，退出处理');
                 return;
             }
-
-            // 检查答案校验开关
-            if (!state.userConfig.answerValidation) {
-                console.log('答案校验已关闭，跳过验证直接处理');
-                // 直接进入原有的审核结果处理逻辑
-                processAnswerResults(parsedBody);
-                return;
-            }
-
-            console.log('========== 开始答案校验 ==========');
-
-            // 获取验证规则
-            const validationRules = state.globalConfig?.validationRules || {
-                requireProductIdTags: [],
-                requireVideoImagePositions: ['主播口播', '直播画面']
-            };
-
-            console.log('验证规则:', validationRules);
-
-            // 遍历所有审核结果进行验证
-            const validationErrors = [];
-
-            Object.values(parsedBody.results).forEach(result => {
-                if (!result) return;
-
-                console.log('校验单个审核结果:', {
-                    task_id: result.task_id,
-                    live_id: result.live_id,
-                    mid_str: result.mid_str
-                });
-
-                const finderItem = result.finder_object?.[0];
-                if (!finderItem) {
-                    console.log('未找到finder_object，跳过校验');
-                    return;
-                }
-
-                const reasonLabel = finderItem.reason_label ||
-                    finderItem.ext_info?.reason_label ||
-                    (finderItem.ext_info?.punish_keyword_path?.[finderItem.ext_info.punish_keyword_path.length - 1]);
-
-                const punishContent = finderItem.ext_info?.punish_content;
-                const productId = finderItem.ext_info?.product_id;
-                const imgUrls = finderItem.img_url || [];
-                const clipTimes = finderItem.clip_times || [];
-                const remark = finderItem.remark;
-
-                console.log('校验数据:', {
-                    reasonLabel,
-                    punishContent,
-                    productId,
-                    imgUrlsCount: imgUrls.length,
-                    clipTimesCount: clipTimes.length,
-                    remark
-                });
-
-                const errors = [];
-
-                // 验证1：需要商品ID的标签
-                if (reasonLabel && validationRules.requireProductIdTags.includes(reasonLabel)) {
-                    console.log(`检查商品ID: 标签"${reasonLabel}"需要商品ID`);
-                    if (!productId || (Array.isArray(productId) && productId.length === 0)) {
-                        errors.push('该标签需提供商品id');
-                        console.log('❌ 商品ID缺失');
-                    } else {
-                        console.log('✓ 商品ID存在');
-                    }
-                }
-
-                // 验证2：违规位置需要视频/图片证据
-                if (punishContent && validationRules.requireVideoImagePositions.includes(punishContent)) {
-                    console.log(`检查证据: 违规位置"${punishContent}"需要视频/图片证据`);
-                    if ((!clipTimes || clipTimes.length === 0) &&
-                        (!imgUrls || imgUrls.length === 0)) {
-                        errors.push('视频/图片证据不能为空');
-                        console.log('❌ 视频/图片证据缺失');
-                    } else {
-                        console.log('✓ 视频/图片证据存在');
-                    }
-                }
-
-                // 验证3：有处罚标签就需要图片证据和违规备注
-                if (reasonLabel) {
-                    console.log(`检查图片和备注: 有处罚标签"${reasonLabel}"`);
-                    if (!imgUrls || imgUrls.length === 0) {
-                        errors.push('图片证据不能为空');
-                        console.log('❌ 图片证据缺失');
-                    } else {
-                        console.log('✓ 图片证据存在');
-                    }
-                    if (!remark || remark.trim() === '') {
-                        errors.push('违规备注不能为空');
-                        console.log('❌ 违规备注缺失');
-                    } else {
-                        console.log('✓ 违规备注存在');
-                    }
-                }
-
-                if (errors.length > 0) {
-                    console.log('校验失败，错误:', errors);
-                    validationErrors.push(...errors);
-                } else {
-                    console.log('✓ 校验通过');
-                }
-            });
-
-            // 如果有验证错误，拦截请求并显示提示
-            if (validationErrors.length > 0) {
-                const uniqueErrors = [...new Set(validationErrors)]; // 去重
-                console.log('========== 答案校验失败 ==========');
-                console.log('拦截原因:', uniqueErrors);
-                showValidationToast(uniqueErrors);
-                return; // 不发送推送，也不关闭提示
-            }
-
-            console.log('========== 答案校验通过 ==========');
 
             // 验证通过，处理审核结果
             processAnswerResults(parsedBody);
