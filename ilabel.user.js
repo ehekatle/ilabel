@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.4.1
-// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证-增强版）
+// @version      3.4.2
+// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证、最小提交时限）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
@@ -28,7 +28,7 @@
     // 获取脚本版本号
     const SCRIPT_VERSION = GM_info.script.version;
 
-    // 可选：屏蔽WebSocket相关错误
+    // 屏蔽WebSocket相关错误
     const originalConsoleError = console.error;
     console.error = function (...args) {
         if (args[0] && typeof args[0] === 'string' &&
@@ -76,7 +76,8 @@
         promptOpacity: 100,
         promptPosition: { x: 100, y: 100 },
         alarmRing: false,
-        answerValidation: true // 默认开启答案校验
+        answerValidation: true, // 默认开启答案校验
+        minSubmitTime: 0 // 最小提交时限（秒），默认为0
     };
 
     // 类型名称映射（固定不变）
@@ -132,7 +133,9 @@
         currentAuditor: '',
         featuresEnabled: false,
         versionCheckDone: false,
-        whitelistCheckDone: false
+        whitelistCheckDone: false,
+        // 记录获取到liveid的系统时间戳
+        liveIdReceiveTimestamp: null
     };
 
     // ========== 版本号匹配函数 ==========
@@ -670,6 +673,14 @@
             if (validationStatus) validationStatus.textContent = state.userConfig.answerValidation ? '开启' : '关闭';
         }
 
+        // 最小提交时限设置
+        const minTimeInput = state.toolContainer.querySelector('#min-time-input');
+        const minTimeValue = state.toolContainer.querySelector('#min-time-value');
+        if (minTimeInput) {
+            minTimeInput.value = state.userConfig.minSubmitTime;
+            if (minTimeValue) minTimeValue.textContent = state.userConfig.minSubmitTime;
+        }
+
         updatePreview();
     }
 
@@ -813,6 +824,16 @@
                                 <span style="font-size: 11px; color: #999; margin-left: 5px;">(开启后将拦截不合规的审核请求)</span>
                             </div>
                         </div>
+
+                        <div class="config-section" style="margin-top: 15px;">
+                            <label class="section-label">最小提交时限：</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="number" id="min-time-input" min="0" max="300" step="1" value="${state.userConfig.minSubmitTime}" style="width: 80px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;" ${!state.featuresEnabled ? 'disabled' : ''}>
+                                <span>秒</span>
+                                <span id="min-time-value" style="color: #666;">${state.userConfig.minSubmitTime}</span>
+                                <span style="font-size: 11px; color: #999; margin-left: 5px;">(获取LiveID后至少等待此秒数才能提交答案，0为不限制)</span>
+                            </div>
+                        </div>
                     </div>
 
                     <div style="width: 220px;">
@@ -933,6 +954,19 @@
             });
         }
 
+        // 最小提交时限输入事件
+        const minTimeInput = state.toolContainer.querySelector('#min-time-input');
+        const minTimeValue = state.toolContainer.querySelector('#min-time-value');
+        if (minTimeInput) {
+            minTimeInput.addEventListener('input', (e) => {
+                let val = parseInt(e.target.value);
+                if (isNaN(val)) val = 0;
+                if (val < 0) val = 0;
+                if (val > 300) val = 300;
+                if (minTimeValue) minTimeValue.textContent = val;
+            });
+        }
+
         const resetBtn = state.toolContainer.querySelector('#reset-config-btn');
         if (resetBtn) {
             resetBtn.addEventListener('click', () => {
@@ -964,6 +998,11 @@
                         if (validationStatus) validationStatus.textContent = DEFAULT_USER_CONFIG.answerValidation ? '开启' : '关闭';
                     }
 
+                    if (minTimeInput) {
+                        minTimeInput.value = DEFAULT_USER_CONFIG.minSubmitTime;
+                        if (minTimeValue) minTimeValue.textContent = DEFAULT_USER_CONFIG.minSubmitTime;
+                    }
+
                     state.userConfig.promptPosition = { x: 100, y: 100 };
 
                     updatePreview();
@@ -989,6 +1028,7 @@
                 const opacity = parseInt(opacitySlider?.value || DEFAULT_USER_CONFIG.promptOpacity);
                 const alarmRing = alarmSwitch?.checked || false;
                 const answerValidation = validationSwitch?.checked || false;
+                const minSubmitTime = parseInt(minTimeInput?.value || 0);
 
                 state.userConfig.promptType = selectedTypes;
                 state.userConfig.promptArrange = arrange;
@@ -996,6 +1036,7 @@
                 state.userConfig.promptOpacity = opacity;
                 state.userConfig.alarmRing = alarmRing;
                 state.userConfig.answerValidation = answerValidation;
+                state.userConfig.minSubmitTime = minSubmitTime;
 
                 saveUserConfig();
                 showToast('配置已保存', 'success');
@@ -1678,6 +1719,10 @@
         state.lastPopupTime = Date.now();
         state.popupConfirmed = false;
 
+        // 记录获取到liveid的系统时间戳（毫秒）
+        state.liveIdReceiveTimestamp = Date.now();
+        console.log('LiveID获取时间戳:', state.liveIdReceiveTimestamp, new Date(state.liveIdReceiveTimestamp).toLocaleTimeString());
+
         closePrompt();
         createPrompt();
         startPushTimer();
@@ -2000,6 +2045,39 @@
         });
     }
 
+    // ========== 最小提交时限检查函数（使用系统时间戳差值） ==========
+    function checkMinSubmitTime() {
+        // 如果没有记录获取时间戳，允许提交
+        if (state.liveIdReceiveTimestamp === null) {
+            console.log('未记录LiveID获取时间戳，跳过最小时限检查');
+            return { valid: true };
+        }
+
+        const minSeconds = state.userConfig.minSubmitTime || 0;
+
+        // 如果时限为0，不限制
+        if (minSeconds <= 0) {
+            return { valid: true };
+        }
+
+        // 计算时间差（毫秒）
+        const elapsedMilliseconds = Date.now() - state.liveIdReceiveTimestamp;
+        const elapsedSeconds = elapsedMilliseconds / 1000;
+
+        if (elapsedSeconds < minSeconds) {
+            const remainingSeconds = Math.ceil(minSeconds - elapsedSeconds);
+            console.log(`最小提交时限检查: 已过${elapsedSeconds.toFixed(1)}秒，需要至少${minSeconds}秒，还需等待${remainingSeconds}秒`);
+            return {
+                valid: false,
+                remainingSeconds: remainingSeconds,
+                message: `答案需超过 ${minSeconds} 秒，还需等待 ${remainingSeconds} 秒`
+            };
+        }
+
+        console.log(`最小提交时限检查通过: 已过${elapsedSeconds.toFixed(1)}秒，大于等于${minSeconds}秒`);
+        return { valid: true };
+    }
+
     // ========== 请求拦截 ==========
     function setupRequestInterception() {
         const originalFetch = window.fetch;
@@ -2012,6 +2090,14 @@
 
                 // 在请求发送前进行验证
                 try {
+                    // 先检查最小提交时限
+                    const timeCheckResult = checkMinSubmitTime();
+                    if (!timeCheckResult.valid) {
+                        console.log('最小提交时限验证失败，阻止请求发送', timeCheckResult.message);
+                        showValidationToast(timeCheckResult.message);
+                        return Promise.reject(new Error(timeCheckResult.message));
+                    }
+
                     const body = options.body;
                     console.log('拦截到答案提交请求，开始前置验证');
 
@@ -2051,7 +2137,7 @@
                 return response;
             }).catch(error => {
                 // 如果是我们主动拒绝的请求，不打印错误堆栈
-                if (error.message && error.message.startsWith('验证失败：')) {
+                if (error.message && (error.message.startsWith('验证失败：') || error.message.includes('答案需超过'))) {
                     console.log('请求已被拦截:', error.message);
                 } else {
                     // 其他错误正常抛出
@@ -2077,6 +2163,19 @@
 
                 // 在请求发送前进行验证
                 try {
+                    // 先检查最小提交时限
+                    const timeCheckResult = checkMinSubmitTime();
+                    if (!timeCheckResult.valid) {
+                        console.log('最小提交时限验证失败，阻止XHR请求发送', timeCheckResult.message);
+                        showValidationToast(timeCheckResult.message);
+                        // 模拟一个错误响应
+                        setTimeout(() => {
+                            xhr.dispatchEvent(new ProgressEvent('error'));
+                        }, 0);
+                        // 阻止请求发送
+                        return;
+                    }
+
                     console.log('拦截到XHR答案提交请求，开始前置验证');
 
                     const validationResult = validateAnswerSubmit(body);
