@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.4.2
-// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证、最小提交时限）
+// @version      3.4.5
+// @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证、提交时限、数据面板）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
 // @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
-// @updateURL    https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
-// @downloadURL  https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
+// @updateURL    https://www.tampermonkey.net/script_installation.php#url=https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js
+// @downloadURL  https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main
 // @match        https://ilabel.weixin.qq.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -17,2875 +17,876 @@
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
 // @grant        GM_info
+// @grant        GM_openInTab
+// @connect      tampermonkey.net
 // @connect      gh-proxy.org
 // @connect      qyapi.weixin.qq.com
+// @connect      raw.githubusercontent.com
 // @run-at       document-start
 // ==/UserScript==
 
-(function () {
-    'use strict';
+(function(){
+'use strict';
 
-    // 获取脚本版本号
-    const SCRIPT_VERSION = GM_info.script.version;
+const V = GM_info.script.version;
+const BASE_RAW = 'https://raw.githubusercontent.com/ehekatle/ilabel/main';
+const BASE_PROXY = 'https://cdn.gh-proxy.org/' + BASE_RAW;
 
-    // 屏蔽WebSocket相关错误
-    const originalConsoleError = console.error;
-    console.error = function (...args) {
-        if (args[0] && typeof args[0] === 'string' &&
-            (args[0].includes('WebSocket') || args[0].includes('ws://') || args[0].includes('wss://'))) {
-            return;
+const MISSION_IDS = [17331,25425,25427,27943,9637,9638,9639,9640,14587,15040,16198,20292,20293,25150,28118,31349,38599,38642,38703,40656,40687,40743,40838,40901,40976,41049,41128,41236,41331,41359,41420,41451,41506,41507,41724,41817,41907,41972];
+
+const K = {
+    CFG: 'il_cfg', CFG_TS: 'il_cfg_ts', USR: 'il_usr',
+    AUDIO: 'il_aud', AUDIO_TS: 'il_aud_ts', QLIST: 'il_ql', QLIST_TS: 'il_ql_ts'
+};
+
+const NAMES = {
+    targeted: '点杀', prefilled: '预埋', exempted: '豁免', review: '复核',
+    penalty: '违规', note: '备注', complaint: '投诉', normal: '普通'
+};
+
+const COLORS = {
+    targeted: '#000000', prefilled: '#f44336', exempted: '#4caf50', review: '#2196f3',
+    note: '#90caf9', penalty: '#ff9800', complaint: '#9e9e9e', normal: '#9e9e9e'
+};
+
+const VIDEO_POS = ['主播口播', '直播画面'];
+
+const DEF_TYPES = Object.keys(NAMES);
+
+const S = {
+    cfg: null, usr: { types: DEF_TYPES, size: 150, pos: null, alarm: true, pushRemind: true, validation: true, minTime: 30 },
+    live: null, types: [], prompt: null, pushTimer: null, lastPush: 0, confirmed: false,
+    audio: null, playing: false, alarmTimer: null,
+    tool: { el: null, overlay: null, show: false },
+    queue: { el: null, overlay: null, show: false, liveId: '', results: [], loading: false, list: [], stats: new Map, done: new Set, start: 0 },
+    panel: { el: null, show: false, timer: null, last: { delay: '--', label: '--', speed: '--', time: '--:--:--' } },
+    auditor: '', ok: false
+};
+
+// ========== 工具函数 ==========
+const $ = (s, p = document) => p.querySelector(s);
+const nw = Date.now;
+const t24 = () => new Date().toTimeString().slice(0, 8);
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+const esc = s => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
+const log = (msg, status) => console.log(`[iLabel] ${msg} ${status === true ? '✅' : status === false ? '❌' : status || ''}`);
+
+const toast = (msg, err) => {
+    const t = document.createElement('div');
+    Object.assign(t.style, {
+        position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+        padding: '16px 24px', borderRadius: '8px', fontSize: '14px', zIndex: 2147483647,
+        animation: 'il-fade 2.5s', maxWidth: '400px', textAlign: 'center', lineHeight: 1.6,
+        background: err ? 'rgba(244,67,54,0.95)' : 'rgba(33,150,243,0.95)', color: '#fff'
+    });
+    t.innerHTML = Array.isArray(msg) ? msg.join('<br>') : msg;
+    document.body.appendChild(t);
+    setTimeout(() => { t.style.animation = 'il-out 0.3s'; setTimeout(() => t.remove(), 300); }, 2500);
+};
+
+const fetchText = (url, timeout = 10000) => new Promise((ok, no) => {
+    GM_xmlhttpRequest({
+        method: 'GET', url: url + '?t=' + nw(), timeout,
+        onload: r => r.status === 200 ? ok(r.responseText) : no(new Error(`HTTP ${r.status}`)),
+        onerror: e => no(new Error('Network error'))
+    });
+});
+
+// ========== 弹窗居中 ==========
+function centerDialog(el, mw = 0.9, mh = 0.9) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    el.style.width = clamp(vw * 0.7, 400, 750) + 'px';
+    el.style.maxWidth = Math.min(750, vw * mw) + 'px';
+    el.style.maxHeight = vh * mh - 40 + 'px';
+    Object.assign(el.style, { left: '50%', top: '50%', transform: 'translate(-50%,-50%)' });
+}
+
+// ========== 配置加载 ==========
+function loadUser() {
+    try {
+        const s = GM_getValue(K.USR);
+        if (s) {
+            const d = JSON.parse(s);
+            S.usr = { types: DEF_TYPES, size: 150, pos: null, alarm: true, pushRemind: true, validation: true, minTime: 30, ...d };
         }
-        originalConsoleError.apply(console, args);
-    };
+    } catch (e) {}
+    if (!S.usr.pos) S.usr.pos = { x: Math.round((window.innerWidth - 200) / 2), y: 100 };
+    if (S.usr.alarmRing !== undefined) { S.usr.pushRemind = S.usr.alarmRing; delete S.usr.alarmRing; }
+    if (S.usr.minSubmitTime !== undefined) { S.usr.minTime = S.usr.minSubmitTime; delete S.usr.minSubmitTime; }
+}
 
-    // ========== 配置 ==========
-    const CONFIG_URL = 'https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/config.json';
-    const ALARM_AUDIO_URL = 'https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/music.mp3';
+function saveUser() { GM_setValue(K.USR, JSON.stringify(S.usr)); }
 
-    const STORAGE_KEYS = {
-        GLOBAL_CONFIG: 'ilabel_global_config',
-        USER_CONFIG: 'ilabel_user_config',
-        LAST_CONFIG_UPDATE: 'ilabel_last_config_update',
-        ALARM_AUDIO_DATA: 'ilabel_alarm_audio_data',
-        ALARM_AUDIO_TIMESTAMP: 'ilabel_alarm_audio_timestamp',
-        QUEUE_LIST: 'ilabel_queue_list',
-        QUEUE_LIST_TIMESTAMP: 'ilabel_queue_list_timestamp',
-        QUEUE_HIT_CACHE: 'ilabel_queue_hit_cache',
-        QUEUE_HIT_STATS: 'ilabel_queue_hit_stats'
-    };
+async function loadCfg() {
+    let success = false;
+    const cached = GM_getValue(K.CFG);
 
-    // 队列查询API
-    const QUEUE_API = {
-        LIST: 'https://ilabel.weixin.qq.com/api/mission/list?pageindex=1&pagesize=100&query=%7B%22mid%22:%22%22,%22keyword%22:%22%22,%22status%22:1,%22authorities%22:[]%7D&mission_type=5&business=32',
-        HITS: 'https://ilabel.weixin.qq.com/api/labeled-hits'
-    };
-
-    // 队列查询配置
-    const QUEUE_CONFIG = {
-        CACHE_EXPIRY: 5 * 60 * 1000,
-        BATCH_SIZE: 5,
-        MAX_HISTORY: 100,
-        STATS_UPDATE_INTERVAL: 10
-    };
-
-    // 默认用户配置
-    const DEFAULT_USER_CONFIG = {
-        promptType: ['targeted', 'prefilled', 'exempted', 'review', 'penalty', 'note', 'complaint', 'normal'],
-        promptArrange: 'horizontal',
-        promptSize: 100,
-        promptOpacity: 100,
-        promptPosition: { x: 100, y: 100 },
-        alarmRing: false,
-        answerValidation: true, // 默认开启答案校验
-        minSubmitTime: 0 // 最小提交时限（秒），默认为0
-    };
-
-    // 类型名称映射（固定不变）
-    const TYPE_NAMES = {
-        targeted: '点杀',
-        prefilled: '预埋',
-        exempted: '豁免',
-        review: '复核',
-        penalty: '违规',
-        note: '备注',
-        complaint: '投诉',
-        normal: '普通'
-    };
-
-    // 类型颜色映射（将从配置文件加载）
-    let TYPE_COLORS = {};
-
-    // ========== 全局状态 ==========
-    const state = {
-        globalConfig: null,
-        userConfig: null,
-        currentLiveData: null,
-        currentTypes: [],
-        promptContainer: null,
-        pushInterval: null,
-        lastPushTime: 0,
-        isConfirmed: false,
-        alarmAudio: null,
-        isAlarmPlaying: false,
-        alarmCheckInterval: null,
-        configToolVisible: false,
-        toolContainer: null,
-        overlay: null,
-        lastPopupTime: null,
-        popupConfirmed: true,
-        spaceHandler: null,
-        queueModalVisible: false,
-        queueModal: null,
-        queueOverlay: null,
-        currentLiveId: '',
-        queueResults: [],
-        isLoadingQueues: false,
-        queueList: [],
-        queueHitCache: new Map(),
-        queueHitStats: new Map(),
-        pendingQueries: new Map(),
-        searchStartTime: 0,
-        processedQueues: new Set(),
-        queryCount: 0,
-        // 状态控制
-        isVersionMatched: false,
-        isUserInWhitelist: false,
-        currentAuditor: '',
-        featuresEnabled: false,
-        versionCheckDone: false,
-        whitelistCheckDone: false,
-        // 记录获取到liveid的系统时间戳
-        liveIdReceiveTimestamp: null
-    };
-
-    // ========== 版本号匹配函数 ==========
-    function versionMatches(pattern, version) {
-        if (pattern === '*.*.*') return true;
-
-        const patternParts = pattern.split('.');
-        const versionParts = version.split('.');
-
-        for (let i = 0; i < 3; i++) {
-            const p = patternParts[i] || '*';
-            const v = versionParts[i] || '0';
-
-            if (p === '*') continue;
-            if (p !== v) return false;
-        }
-
-        return true;
-    }
-
-    // ========== 初始化 ==========
-    async function init() {
-        console.log('iLabel辅助工具: 初始化开始，脚本版本:', SCRIPT_VERSION);
-
+    // 先加载缓存
+    if (cached) {
         try {
-            await loadGlobalConfig();
-
-            if (state.globalConfig && state.globalConfig.version) {
-                state.isVersionMatched = versionMatches(state.globalConfig.version, SCRIPT_VERSION);
-                console.log('版本匹配检查:', state.isVersionMatched ? '通过' : '失败',
-                    '配置版本:', state.globalConfig.version, '脚本版本:', SCRIPT_VERSION);
-            } else {
-                console.warn('未找到版本配置，默认版本不匹配');
-                state.isVersionMatched = false;
-            }
-
-            state.versionCheckDone = true;
-
-            state.currentAuditor = await getAuditorInfo();
-            console.log('当前审核人员:', state.currentAuditor || '未知');
-
-            if (state.globalConfig?.auditorWhiteList && state.currentAuditor) {
-                state.isUserInWhitelist = state.globalConfig.auditorWhiteList.some(
-                    auditor => auditor.name === state.currentAuditor
-                );
-            } else {
-                state.isUserInWhitelist = false;
-            }
-            console.log('白名单检查:', state.isUserInWhitelist ? '在白名单中' : '不在白名单中');
-
-            state.whitelistCheckDone = true;
-            state.featuresEnabled = state.isVersionMatched && state.isUserInWhitelist;
-            console.log('功能启用状态:', state.featuresEnabled ? '完整功能' : '仅推送模式');
-
-            loadUserConfig();
-
-            if (state.featuresEnabled) {
-                preloadAlarmAudio();
-                await preloadQueueList();
-                loadQueueCache();
-            }
-
-            addStyles();
-            syncColorsFromConfig(); // 确保颜色已同步
-
-            GM_registerMenuCommand(`配置工具`, () => {
-                toggleConfigTool();
-            });
-
-            GM_registerMenuCommand(`队列查询`, () => {
-                toggleQueueModal();
-            });
-
-            setupRequestInterception();
-            startConfigChecker();
-
-            console.log('iLabel辅助工具: 初始化完成');
-
-        } catch (error) {
-            console.error('iLabel辅助工具: 初始化失败', error);
-        }
+            const parsed = JSON.parse(cached);
+            S.cfg = parsed.globalConfig || (parsed.auditorWhiteList ? parsed : null);
+            if (S.cfg) success = true;
+        } catch (e) {}
     }
 
-    // ========== 颜色同步函数 ==========
-    function syncColorsFromConfig() {
-        if (state.globalConfig?.popupColor) {
-            TYPE_COLORS = {
-                targeted: state.globalConfig.popupColor.targeted || '#000000',
-                prefilled: state.globalConfig.popupColor.prefilled || '#f44336',
-                exempted: state.globalConfig.popupColor.exempted || '#4caf50',
-                review: state.globalConfig.popupColor.review || '#2196f3',
-                note: state.globalConfig.popupColor.note || '#90caf9',
-                penalty: state.globalConfig.popupColor.penalty || '#ff9800',
-                complaint: state.globalConfig.popupColor.complaint || '#9e9e9e',
-                normal: state.globalConfig.popupColor.normal || '#ffffff'
-            };
-        } else {
-            // 默认颜色（作为后备）
-            TYPE_COLORS = {
-                targeted: '#000000',
-                prefilled: '#f44336',
-                exempted: '#4caf50',
-                review: '#2196f3',
-                note: '#90caf9',
-                penalty: '#ff9800',
-                complaint: '#9e9e9e',
-                normal: '#ffffff'
-            };
-        }
-        console.log('颜色配置已同步', TYPE_COLORS);
-    }
-
-    // ========== 配置管理 ==========
-    function loadUserConfig() {
-        try {
-            const saved = GM_getValue(STORAGE_KEYS.USER_CONFIG, null);
-            if (saved) {
-                state.userConfig = JSON.parse(saved);
-                state.userConfig = { ...DEFAULT_USER_CONFIG, ...state.userConfig };
-            } else {
-                state.userConfig = { ...DEFAULT_USER_CONFIG };
-            }
-            console.log('用户配置加载成功', state.userConfig);
-        } catch (e) {
-            console.error('加载用户配置失败', e);
-            state.userConfig = { ...DEFAULT_USER_CONFIG };
-        }
-    }
-
-    function saveUserConfig() {
-        try {
-            GM_setValue(STORAGE_KEYS.USER_CONFIG, JSON.stringify(state.userConfig));
-            console.log('用户配置保存成功');
-        } catch (e) {
-            console.error('保存用户配置失败', e);
-        }
-    }
-
-    async function loadGlobalConfig(force = false) {
-        const now = Date.now();
-        const lastUpdate = GM_getValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, 0);
-
-        if (!force && now - lastUpdate < 86400000) {
-            const saved = GM_getValue(STORAGE_KEYS.GLOBAL_CONFIG, null);
-            if (saved) {
-                try {
-                    const cachedConfig = JSON.parse(saved);
-                    if (cachedConfig.version) {
-                        state.globalConfig = cachedConfig;
-                        syncColorsFromConfig();
-                        console.log('使用缓存的全局配置，版本:', cachedConfig.version);
-                        return;
-                    }
-                } catch (e) {
-                    console.error('解析缓存的全局配置失败', e);
-                }
-            }
-        }
-
-        try {
-            console.log('从网络加载全局配置...');
-            const configText = await fetchConfig();
-            const config = JSON.parse(configText);
-
-            if (config.globalConfig) {
-                state.globalConfig = {
-                    ...config.globalConfig,
-                    version: config.version || '3.*.*',
-                    updateUrl: config.updateUrl || '',
-                    validationRules: config.validationRules || {
-                        requireProductIdTags: [],
-                        requireVideoImagePositions: ['主播口播', '直播画面']
-                    }
-                };
-                GM_setValue(STORAGE_KEYS.GLOBAL_CONFIG, JSON.stringify(state.globalConfig));
-                GM_setValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, now);
-
-                syncColorsFromConfig();
-
-                console.log('全局配置更新成功，版本:', state.globalConfig.version);
-            } else {
-                throw new Error('配置文件格式错误');
-            }
-        } catch (error) {
-            console.error('加载全局配置失败', error);
-            const cached = GM_getValue(STORAGE_KEYS.GLOBAL_CONFIG, null);
-            if (cached) {
-                try {
-                    state.globalConfig = JSON.parse(cached);
-                    syncColorsFromConfig();
-                    console.log('使用缓存的全局配置（加载失败后）');
-                } catch (e) {
-                    console.error('解析缓存配置失败', e);
-                    state.globalConfig = null;
-                }
-            }
-        }
-    }
-
-    function fetchConfig() {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: CONFIG_URL + '?t=' + Date.now(),
-                onload: function (response) {
-                    if (response.status === 200) {
-                        resolve(response.responseText);
-                    } else {
-                        reject(new Error(`加载失败: ${response.status}`));
-                    }
-                },
-                onerror: reject
-            });
-        });
-    }
-
-    function startConfigChecker() {
-        setInterval(async () => {
-            const now = Date.now();
-            const lastUpdate = GM_getValue(STORAGE_KEYS.LAST_CONFIG_UPDATE, 0);
-            if (now - lastUpdate > 86400000) {
-                console.log('触发定时配置检查');
-                await loadGlobalConfig();
-            }
-        }, 3600000);
-    }
-
-    // ========== 统一的提示显示函数 ==========
-    function showValidationToast(messages) {
-        const toast = document.createElement('div');
-        toast.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            padding: 16px 24px;
-            background: rgba(244, 67, 54, 0.95);
-            color: white;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-            z-index: 1000002;
-            animation: fadeInOut 3s ease;
-            max-width: 400px;
-            text-align: center;
-            line-height: 1.6;
-            border: 1px solid rgba(255,255,255,0.2);
-            backdrop-filter: blur(5px);
-        `;
-
-        if (Array.isArray(messages)) {
-            toast.innerHTML = messages.join('<br>');
-        } else {
-            toast.textContent = messages;
-        }
-
-        document.body.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.animation = 'fadeOut 0.3s ease';
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
-    }
-
-    // ========== 闹钟音频预加载 ==========
-    function preloadAlarmAudio() {
-        if (!state.featuresEnabled) return;
-
-        console.log('预加载闹钟音频...');
-
-        const cachedAudioData = GM_getValue(STORAGE_KEYS.ALARM_AUDIO_DATA, null);
-        const cachedTimestamp = GM_getValue(STORAGE_KEYS.ALARM_AUDIO_TIMESTAMP, 0);
-        const cacheExpiry = 24 * 60 * 60 * 1000;
-
-        if (cachedAudioData && (Date.now() - cachedTimestamp) < cacheExpiry) {
-            try {
-                const byteCharacters = atob(cachedAudioData);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
-                }
-                const byteArray = new Uint8Array(byteNumbers);
-                const blob = new Blob([byteArray], { type: 'audio/mpeg' });
-                const blobUrl = URL.createObjectURL(blob);
-
-                state.alarmAudio = new Audio();
-                state.alarmAudio.src = blobUrl;
-                state.alarmAudio.loop = true;
-                state.alarmAudio.volume = 0.4;
-                state.alarmAudio.load();
-
-                console.log('缓存音频加载完成');
-                return;
-            } catch (e) {
-                console.error('缓存音频处理失败', e);
-            }
-        }
-
-        loadAlarmAudioFromNetwork();
-    }
-
-    function loadAlarmAudioFromNetwork() {
-        if (!state.featuresEnabled) return;
-
-        GM_xmlhttpRequest({
-            method: 'GET',
-            url: ALARM_AUDIO_URL + '?t=' + Date.now(),
-            responseType: 'arraybuffer',
-            timeout: 15000,
-            onload: function (response) {
-                if (response.status === 200) {
-                    try {
-                        const blob = new Blob([response.response], { type: 'audio/mpeg' });
-                        const blobUrl = URL.createObjectURL(blob);
-
-                        state.alarmAudio = new Audio();
-                        state.alarmAudio.src = blobUrl;
-                        state.alarmAudio.loop = true;
-                        state.alarmAudio.volume = 0.4;
-                        state.alarmAudio.load();
-
-                        const reader = new FileReader();
-                        reader.onloadend = function () {
-                            const base64data = reader.result.split(',')[1];
-                            if (base64data) {
-                                GM_setValue(STORAGE_KEYS.ALARM_AUDIO_DATA, base64data);
-                                GM_setValue(STORAGE_KEYS.ALARM_AUDIO_TIMESTAMP, Date.now());
-                            }
-                        };
-                        reader.readAsDataURL(blob);
-
-                        console.log('网络音频加载完成');
-                    } catch (e) {
-                        console.error('处理音频数据失败', e);
-                    }
-                } else {
-                    console.error('音频下载失败');
-                }
-            },
-            onerror: function (error) {
-                console.error('音频下载网络错误', error);
-            }
-        });
-    }
-
-    // ========== 闹钟控制 ==========
-    function playAlarm() {
-        if (!state.featuresEnabled || !state.userConfig.alarmRing || state.isConfirmed) return;
-
-        try {
-            if (!state.alarmAudio) {
-                console.warn('音频对象未初始化');
-                return;
-            }
-
-            if (state.isAlarmPlaying) return;
-
-            state.alarmAudio.loop = true;
-            state.alarmAudio.currentTime = 0;
-
-            const playPromise = state.alarmAudio.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    state.isAlarmPlaying = true;
-                    console.log('闹钟开始播放');
-                }).catch(error => {
-                    console.error('闹钟播放失败:', error);
-                    state.isAlarmPlaying = false;
-                });
-            }
-        } catch (e) {
-            console.error('播放闹钟异常:', e);
-            state.isAlarmPlaying = false;
-        }
-    }
-
-    function stopAlarm() {
-        if (state.alarmAudio && state.isAlarmPlaying) {
-            try {
-                state.alarmAudio.pause();
-                state.alarmAudio.currentTime = 0;
-                state.isAlarmPlaying = false;
-                console.log('闹钟已停止');
-            } catch (e) {
-                console.error('停止闹钟失败:', e);
-            }
-        }
-    }
-
-    function playTestAlarm() {
-        if (!state.featuresEnabled || !state.userConfig.alarmRing) return;
-
-        try {
-            if (!state.alarmAudio) {
-                console.warn('音频对象未初始化');
-                return;
-            }
-
-            state.alarmAudio.loop = false;
-            state.alarmAudio.currentTime = 0;
-
-            const playPromise = state.alarmAudio.play();
-            if (playPromise !== undefined) {
-                playPromise.then(() => {
-                    console.log('测试闹钟播放');
-                    setTimeout(() => {
-                        if (state.alarmAudio) {
-                            state.alarmAudio.pause();
-                            state.alarmAudio.currentTime = 0;
-                        }
-                    }, 3000);
-                }).catch(console.error);
-            }
-        } catch (e) {
-            console.error('播放测试闹钟失败', e);
-        }
-    }
-
-    function startAlarmCheck() {
-        if (!state.featuresEnabled) return;
-
-        if (state.alarmCheckInterval) {
-            clearInterval(state.alarmCheckInterval);
-        }
-
-        state.alarmCheckInterval = setInterval(() => {
-            const popupExists = !!document.getElementById('ilabel-prompt-container');
-            if (popupExists && !state.isConfirmed && state.userConfig.alarmRing && !state.isAlarmPlaying) {
-                playAlarm();
-            }
-
-            if (!popupExists || state.isConfirmed) {
-                stopAlarm();
-            }
-        }, 1000);
-    }
-
-    // ========== 配置工具 ==========
-    function toggleConfigTool() {
-        if (state.configToolVisible) {
-            closeConfigTool();
-        } else {
-            openConfigTool();
-        }
-    }
-
-    function openConfigTool() {
-        if (state.toolContainer) {
-            state.toolContainer.style.display = 'block';
-            state.overlay.style.display = 'block';
-            state.configToolVisible = true;
-            updateConfigToolValues();
-            return;
-        }
-        createConfigTool();
-    }
-
-    function closeConfigTool() {
-        if (state.toolContainer) {
-            state.toolContainer.style.display = 'none';
-        }
-        if (state.overlay) {
-            state.overlay.style.display = 'none';
-        }
-        state.configToolVisible = false;
-    }
-
-    function updateConfigToolValues() {
-        if (!state.toolContainer) return;
-
-        const versionWarning = state.toolContainer.querySelector('#version-warning');
-        if (versionWarning) {
-            if (!state.isVersionMatched && state.globalConfig?.updateUrl) {
-                versionWarning.style.display = 'flex';
-                const updateLink = versionWarning.querySelector('.update-link');
-                if (updateLink) {
-                    updateLink.href = state.globalConfig.updateUrl;
-                }
-            } else {
-                versionWarning.style.display = 'none';
-            }
-        }
-
-        const whitelistWarning = state.toolContainer.querySelector('#whitelist-warning');
-        if (whitelistWarning) {
-            if (state.isVersionMatched && !state.isUserInWhitelist) {
-                whitelistWarning.style.display = 'flex';
-            } else {
-                whitelistWarning.style.display = 'none';
-            }
-        }
-
-        const configSections = state.toolContainer.querySelectorAll('.config-section, .preview-section, .config-tool-footer');
-        configSections.forEach(section => {
-            if (!state.featuresEnabled) {
-                section.style.opacity = '0.5';
-                section.style.pointerEvents = 'none';
-            } else {
-                section.style.opacity = '1';
-                section.style.pointerEvents = 'auto';
-            }
-        });
-
-        if (!state.featuresEnabled) return;
-
-        const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
-        checkboxes.forEach(cb => {
-            cb.checked = state.userConfig.promptType.includes(cb.value);
-        });
-
-        const arrangeRadios = state.toolContainer.querySelectorAll('input[name="arrange"]');
-        arrangeRadios.forEach(radio => {
-            radio.checked = radio.value === state.userConfig.promptArrange;
-        });
-
-        const sizeSlider = state.toolContainer.querySelector('#size-slider');
-        const sizeInput = state.toolContainer.querySelector('#size-input');
-        if (sizeSlider) sizeSlider.value = state.userConfig.promptSize;
-        if (sizeInput) sizeInput.value = state.userConfig.promptSize;
-
-        const opacitySlider = state.toolContainer.querySelector('#opacity-slider');
-        const opacityInput = state.toolContainer.querySelector('#opacity-input');
-        if (opacitySlider) opacitySlider.value = state.userConfig.promptOpacity;
-        if (opacityInput) opacityInput.value = state.userConfig.promptOpacity;
-
-        const alarmSwitch = state.toolContainer.querySelector('#alarm-switch');
-        if (alarmSwitch) alarmSwitch.checked = state.userConfig.alarmRing;
-
-        // 答案校验开关
-        const validationSwitch = state.toolContainer.querySelector('#validation-switch');
-        const validationStatus = state.toolContainer.querySelector('#validation-status');
-        if (validationSwitch) {
-            validationSwitch.checked = state.userConfig.answerValidation;
-            if (validationStatus) validationStatus.textContent = state.userConfig.answerValidation ? '开启' : '关闭';
-        }
-
-        // 最小提交时限设置
-        const minTimeInput = state.toolContainer.querySelector('#min-time-input');
-        const minTimeValue = state.toolContainer.querySelector('#min-time-value');
-        if (minTimeInput) {
-            minTimeInput.value = state.userConfig.minSubmitTime;
-            if (minTimeValue) minTimeValue.textContent = state.userConfig.minSubmitTime;
-        }
-
-        updatePreview();
-    }
-
-    function createConfigTool() {
-        state.overlay = document.createElement('div');
-        state.overlay.id = 'ilabel-config-overlay';
-        state.overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000000;
-            display: none;
-        `;
-        state.overlay.addEventListener('click', closeConfigTool);
-        document.body.appendChild(state.overlay);
-
-        state.toolContainer = document.createElement('div');
-        state.toolContainer.id = 'ilabel-config-tool';
-        state.toolContainer.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 750px;
-            max-width: 95vw;
-            max-height: 90vh;
-            overflow-y: auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
-            z-index: 1000001;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            display: none;
-        `;
-
-        state.toolContainer.innerHTML = buildConfigToolHTML();
-        document.body.appendChild(state.toolContainer);
-
-        bindConfigToolEvents();
-        updatePreview();
-
-        state.toolContainer.style.display = 'block';
-        state.overlay.style.display = 'block';
-        state.configToolVisible = true;
-    }
-
-    function buildConfigToolHTML() {
-        const selectedTypes = state.userConfig.promptType;
-
-        const versionWarningHTML = (!state.isVersionMatched && state.globalConfig?.updateUrl) ? `
-            <div id="version-warning" class="warning-banner" style="background: #ff5252; color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
-                <span>⚠️ 脚本版本与配置不兼容 (配置版本: ${state.globalConfig?.version || '未知'}, 脚本版本: ${SCRIPT_VERSION})</span>
-                <a href="${state.globalConfig.updateUrl}" target="_blank" class="update-link" style="background: white; color: #ff5252; padding: 4px 12px; border-radius: 4px; text-decoration: none; font-weight: 500;">点击更新</a>
-            </div>
-        ` : '<div id="version-warning" style="display: none;"></div>';
-
-        const whitelistWarningHTML = (state.isVersionMatched && !state.isUserInWhitelist) ? `
-            <div id="whitelist-warning" class="warning-banner" style="background: #ff9800; color: white; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center;">
-                <span>⚠️ 脚本加载错误</span>
-            </div>
-        ` : '<div id="whitelist-warning" style="display: none;"></div>';
-
-        let typesHTML = '';
-        for (const [type, name] of Object.entries(TYPE_NAMES)) {
-            const checked = selectedTypes.includes(type) ? 'checked' : '';
-            const color = TYPE_COLORS[type] || '#000000';
-            typesHTML += `
-                <label class="checkbox-item">
-                    <input type="checkbox" class="type-checkbox" value="${type}" ${checked} ${!state.featuresEnabled ? 'disabled' : ''}>
-                    <span style="color: ${color}">${name}</span>
-                </label>
-            `;
-        }
-
-        return `
-            <div class="config-tool-container">
-                <div class="config-tool-header">
-                    <h3>iLabel辅助工具配置 ${SCRIPT_VERSION} by ehekatle</h3>
-                    <button class="close-btn" id="close-config-btn">×</button>
-                </div>
-
-                ${versionWarningHTML}
-                ${whitelistWarningHTML}
-
-                <div class="config-tool-body" style="display: flex; gap: 20px;">
-                    <div style="flex: 1;">
-                        <div class="config-section">
-                            <label class="section-label">提示类型：</label>
-                            <div class="checkbox-group" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
-                                ${typesHTML}
-                            </div>
-                        </div>
-
-                        <div class="config-section" style="margin-top: 15px;">
-                            <label class="section-label">排列方式：</label>
-                            <div class="radio-group" style="display: flex; gap: 20px;">
-                                <label><input type="radio" name="arrange" value="horizontal" ${state.userConfig.promptArrange === 'horizontal' ? 'checked' : ''} ${!state.featuresEnabled ? 'disabled' : ''}> 横向</label>
-                                <label><input type="radio" name="arrange" value="vertical" ${state.userConfig.promptArrange === 'vertical' ? 'checked' : ''} ${!state.featuresEnabled ? 'disabled' : ''}> 纵向</label>
-                            </div>
-                        </div>
-
-                        <div class="config-section" style="margin-top: 15px;">
-                            <label class="section-label">缩放比例 <span id="size-value">${state.userConfig.promptSize}</span>%：</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="range" id="size-slider" min="20" max="200" step="5" value="${state.userConfig.promptSize}" style="flex: 1;" ${!state.featuresEnabled ? 'disabled' : ''}>
-                                <input type="number" id="size-input" min="20" max="200" step="5" value="${state.userConfig.promptSize}" style="width: 60px; padding: 4px;" ${!state.featuresEnabled ? 'disabled' : ''}>
-                            </div>
-                        </div>
-
-                        <div class="config-section" style="margin-top: 15px;">
-                            <label class="section-label">透明度 <span id="opacity-value">${state.userConfig.promptOpacity}</span>%：</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="range" id="opacity-slider" min="10" max="100" step="5" value="${state.userConfig.promptOpacity}" style="flex: 1;" ${!state.featuresEnabled ? 'disabled' : ''}>
-                                <input type="number" id="opacity-input" min="10" max="100" step="5" value="${state.userConfig.promptOpacity}" style="width: 60px; padding: 4px;" ${!state.featuresEnabled ? 'disabled' : ''}>
-                            </div>
-                        </div>
-
-                        <div class="config-section" style="margin-top: 15px;">
-                            <label class="section-label">闹钟提醒：</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <label class="switch">
-                                    <input type="checkbox" id="alarm-switch" ${state.userConfig.alarmRing ? 'checked' : ''} ${!state.featuresEnabled ? 'disabled' : ''}>
-                                    <span class="slider"></span>
-                                </label>
-                                <span id="alarm-status">${state.userConfig.alarmRing ? '开启' : '关闭'}</span>
-                                <button id="test-alarm-btn" class="test-btn" ${!state.userConfig.alarmRing || !state.featuresEnabled ? 'disabled' : ''}>测试闹钟</button>
-                            </div>
-                        </div>
-
-                        <div class="config-section" style="margin-top: 15px;">
-                            <label class="section-label">答案校验：</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <label class="switch">
-                                    <input type="checkbox" id="validation-switch" ${state.userConfig.answerValidation ? 'checked' : ''} ${!state.featuresEnabled ? 'disabled' : ''}>
-                                    <span class="slider"></span>
-                                </label>
-                                <span id="validation-status">${state.userConfig.answerValidation ? '开启' : '关闭'}</span>
-                                <span style="font-size: 11px; color: #999; margin-left: 5px;">(开启后将拦截不合规的审核请求)</span>
-                            </div>
-                        </div>
-
-                        <div class="config-section" style="margin-top: 15px;">
-                            <label class="section-label">最小提交时限：</label>
-                            <div style="display: flex; gap: 10px; align-items: center;">
-                                <input type="number" id="min-time-input" min="0" max="300" step="1" value="${state.userConfig.minSubmitTime}" style="width: 80px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;" ${!state.featuresEnabled ? 'disabled' : ''}>
-                                <span>秒</span>
-                                <span id="min-time-value" style="color: #666;">${state.userConfig.minSubmitTime}</span>
-                                <span style="font-size: 11px; color: #999; margin-left: 5px;">(获取LiveID后至少等待此秒数才能提交答案，0为不限制)</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div style="width: 220px;">
-                        <div class="preview-section">
-                            <label class="section-label">预览：</label>
-                            <div class="preview-container" style="background: #f5f5f5; padding: 20px 10px; border-radius: 8px;">
-                                <div id="preview-wrapper" class="preview-wrapper ${state.userConfig.promptArrange}" style="justify-content: center; width: 200px;">
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="config-tool-footer" style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; padding-top: 15px; border-top: 1px solid #eee;">
-                    <button id="reset-config-btn" class="reset-btn" ${!state.featuresEnabled ? 'disabled' : ''}>恢复默认</button>
-                    <button id="save-config-btn" class="save-btn" ${!state.featuresEnabled ? 'disabled' : ''}>保存配置</button>
-                </div>
-            </div>
-        `;
-    }
-
-    function bindConfigToolEvents() {
-        if (!state.toolContainer) return;
-
-        const closeBtn = state.toolContainer.querySelector('#close-config-btn');
-        if (closeBtn) closeBtn.addEventListener('click', closeConfigTool);
-
-        if (!state.featuresEnabled) return;
-
-        const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
-        checkboxes.forEach(cb => {
-            cb.addEventListener('change', updatePreview);
-        });
-
-        const arrangeRadios = state.toolContainer.querySelectorAll('input[name="arrange"]');
-        arrangeRadios.forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                const wrapper = state.toolContainer.querySelector('#preview-wrapper');
-                if (wrapper) {
-                    if (e.target.value === 'vertical') {
-                        wrapper.classList.add('vertical');
-                    } else {
-                        wrapper.classList.remove('vertical');
-                    }
-                }
-                updatePreview();
-            });
-        });
-
-        const sizeSlider = state.toolContainer.querySelector('#size-slider');
-        const sizeInput = state.toolContainer.querySelector('#size-input');
-        const sizeValue = state.toolContainer.querySelector('#size-value');
-
-        if (sizeSlider) {
-            sizeSlider.addEventListener('input', (e) => {
-                const val = e.target.value;
-                if (sizeInput) sizeInput.value = val;
-                if (sizeValue) sizeValue.textContent = val;
-                updatePreview();
-            });
-        }
-
-        if (sizeInput) {
-            sizeInput.addEventListener('input', (e) => {
-                const val = e.target.value;
-                if (sizeSlider) sizeSlider.value = val;
-                if (sizeValue) sizeValue.textContent = val;
-                updatePreview();
-            });
-        }
-
-        const opacitySlider = state.toolContainer.querySelector('#opacity-slider');
-        const opacityInput = state.toolContainer.querySelector('#opacity-input');
-        const opacityValue = state.toolContainer.querySelector('#opacity-value');
-
-        if (opacitySlider) {
-            opacitySlider.addEventListener('input', (e) => {
-                const val = e.target.value;
-                if (opacityInput) opacityInput.value = val;
-                if (opacityValue) opacityValue.textContent = val;
-                updatePreview();
-            });
-        }
-
-        if (opacityInput) {
-            opacityInput.addEventListener('input', (e) => {
-                const val = e.target.value;
-                if (opacitySlider) opacitySlider.value = val;
-                if (opacityValue) opacityValue.textContent = val;
-                updatePreview();
-            });
-        }
-
-        const alarmSwitch = state.toolContainer.querySelector('#alarm-switch');
-        const alarmStatus = state.toolContainer.querySelector('#alarm-status');
-        const testBtn = state.toolContainer.querySelector('#test-alarm-btn');
-
-        if (alarmSwitch) {
-            alarmSwitch.addEventListener('change', (e) => {
-                const checked = e.target.checked;
-                if (alarmStatus) alarmStatus.textContent = checked ? '开启' : '关闭';
-                if (testBtn) testBtn.disabled = !checked;
-            });
-        }
-
-        if (testBtn) {
-            testBtn.addEventListener('click', playTestAlarm);
-        }
-
-        // 答案校验开关事件
-        const validationSwitch = state.toolContainer.querySelector('#validation-switch');
-        const validationStatus = state.toolContainer.querySelector('#validation-status');
-        if (validationSwitch) {
-            validationSwitch.addEventListener('change', (e) => {
-                const checked = e.target.checked;
-                if (validationStatus) validationStatus.textContent = checked ? '开启' : '关闭';
-                console.log('答案校验开关状态变更为:', checked ? '开启' : '关闭');
-            });
-        }
-
-        // 最小提交时限输入事件
-        const minTimeInput = state.toolContainer.querySelector('#min-time-input');
-        const minTimeValue = state.toolContainer.querySelector('#min-time-value');
-        if (minTimeInput) {
-            minTimeInput.addEventListener('input', (e) => {
-                let val = parseInt(e.target.value);
-                if (isNaN(val)) val = 0;
-                if (val < 0) val = 0;
-                if (val > 300) val = 300;
-                if (minTimeValue) minTimeValue.textContent = val;
-            });
-        }
-
-        const resetBtn = state.toolContainer.querySelector('#reset-config-btn');
-        if (resetBtn) {
-            resetBtn.addEventListener('click', () => {
-                if (confirm('确定要恢复默认配置吗？')) {
-                    const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
-                    checkboxes.forEach(cb => {
-                        cb.checked = DEFAULT_USER_CONFIG.promptType.includes(cb.value);
-                    });
-
-                    const horizontalRadio = state.toolContainer.querySelector('input[value="horizontal"]');
-                    if (horizontalRadio) horizontalRadio.checked = true;
-
-                    if (sizeSlider) sizeSlider.value = DEFAULT_USER_CONFIG.promptSize;
-                    if (sizeInput) sizeInput.value = DEFAULT_USER_CONFIG.promptSize;
-                    if (sizeValue) sizeValue.textContent = DEFAULT_USER_CONFIG.promptSize;
-
-                    if (opacitySlider) opacitySlider.value = DEFAULT_USER_CONFIG.promptOpacity;
-                    if (opacityInput) opacityInput.value = DEFAULT_USER_CONFIG.promptOpacity;
-                    if (opacityValue) opacityValue.textContent = DEFAULT_USER_CONFIG.promptOpacity;
-
-                    if (alarmSwitch) {
-                        alarmSwitch.checked = DEFAULT_USER_CONFIG.alarmRing;
-                        if (alarmStatus) alarmStatus.textContent = DEFAULT_USER_CONFIG.alarmRing ? '开启' : '关闭';
-                        if (testBtn) testBtn.disabled = !DEFAULT_USER_CONFIG.alarmRing;
-                    }
-
-                    if (validationSwitch) {
-                        validationSwitch.checked = DEFAULT_USER_CONFIG.answerValidation;
-                        if (validationStatus) validationStatus.textContent = DEFAULT_USER_CONFIG.answerValidation ? '开启' : '关闭';
-                    }
-
-                    if (minTimeInput) {
-                        minTimeInput.value = DEFAULT_USER_CONFIG.minSubmitTime;
-                        if (minTimeValue) minTimeValue.textContent = DEFAULT_USER_CONFIG.minSubmitTime;
-                    }
-
-                    state.userConfig.promptPosition = { x: 100, y: 100 };
-
-                    updatePreview();
-                    showToast('已恢复默认配置', 'info');
-                }
-            });
-        }
-
-        const saveBtn = state.toolContainer.querySelector('#save-config-btn');
-        if (saveBtn) {
-            saveBtn.addEventListener('click', () => {
-                const selectedTypes = [];
-                const checkboxes = state.toolContainer.querySelectorAll('.type-checkbox');
-                checkboxes.forEach(cb => {
-                    if (cb.checked) selectedTypes.push(cb.value);
-                });
-
-                let arrange = 'horizontal';
-                const selectedArrange = state.toolContainer.querySelector('input[name="arrange"]:checked');
-                if (selectedArrange) arrange = selectedArrange.value;
-
-                const size = parseInt(sizeSlider?.value || DEFAULT_USER_CONFIG.promptSize);
-                const opacity = parseInt(opacitySlider?.value || DEFAULT_USER_CONFIG.promptOpacity);
-                const alarmRing = alarmSwitch?.checked || false;
-                const answerValidation = validationSwitch?.checked || false;
-                const minSubmitTime = parseInt(minTimeInput?.value || 0);
-
-                state.userConfig.promptType = selectedTypes;
-                state.userConfig.promptArrange = arrange;
-                state.userConfig.promptSize = size;
-                state.userConfig.promptOpacity = opacity;
-                state.userConfig.alarmRing = alarmRing;
-                state.userConfig.answerValidation = answerValidation;
-                state.userConfig.minSubmitTime = minSubmitTime;
-
-                saveUserConfig();
-                showToast('配置已保存', 'success');
-
-                setTimeout(closeConfigTool, 1000);
-            });
-        }
-    }
-
-    function updatePreview() {
-        if (!state.toolContainer) return;
-
-        const wrapper = state.toolContainer.querySelector('#preview-wrapper');
-        if (!wrapper) return;
-
-        const previewTypes = ['prefilled', 'exempted'];
-
-        const sizeSlider = state.toolContainer.querySelector('#size-slider');
-        const opacitySlider = state.toolContainer.querySelector('#opacity-slider');
-        const scale = (parseInt(sizeSlider?.value || 100) / 100);
-        const opacity = (parseInt(opacitySlider?.value || 100) / 100);
-
-        let previewHTML = '';
-        previewTypes.forEach(type => {
-            const color = TYPE_COLORS[type] || '#000000';
-            previewHTML += `<div class="preview-item" style="background-color: ${color}; opacity: ${opacity};">${TYPE_NAMES[type]}</div>`;
-        });
-        previewHTML += `<div class="preview-item confirm-btn" style="background-color: #f44336; color: white; border: none; opacity: ${opacity};">确认</div>`;
-
-        wrapper.innerHTML = previewHTML;
-        wrapper.style.transform = `scale(${scale})`;
-
-        if (!wrapper.classList.contains('vertical')) {
-            const items = wrapper.querySelectorAll('.preview-item');
-            const height = 28;
-            items.forEach(item => {
-                item.style.width = (height * 2) + 'px';
-                item.style.textAlign = 'center';
-                item.style.padding = '6px 0';
-            });
-        } else {
-            const items = wrapper.querySelectorAll('.preview-item');
-            items.forEach(item => {
-                item.style.width = 'auto';
-                item.style.minWidth = '56px';
-                item.style.padding = '6px 16px';
-                item.style.textAlign = 'center';
-            });
-
-            setTimeout(() => {
-                const items = wrapper.querySelectorAll('.preview-item');
-                const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
-                items.forEach(item => {
-                    item.style.width = maxWidth + 'px';
-                });
-            }, 0);
-        }
-    }
-
-    function showToast(message, type = 'info') {
-        const toast = document.createElement('div');
-        toast.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            padding: 12px 24px;
-            background: ${type === 'success' ? '#4caf50' : type === 'error' ? '#f44336' : '#2196f3'};
-            color: white;
-            border-radius: 6px;
-            font-size: 14px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            z-index: 1000002;
-            animation: slideIn 0.3s ease;
-        `;
-        toast.textContent = message;
-        document.body.appendChild(toast);
-
-        setTimeout(() => {
-            toast.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => toast.remove(), 300);
-        }, 2000);
-    }
-
-    // ========== 队列查询功能 ==========
-    function toggleQueueModal() {
-        if (!state.featuresEnabled) {
-            showToast('脚本加载错误', 'error');
-            return;
-        }
-
-        if (state.queueModalVisible) {
-            closeQueueModal();
-        } else {
-            openQueueModal();
-        }
-    }
-
-    function openQueueModal() {
-        if (!state.featuresEnabled) return;
-
-        if (state.queueModal) {
-            state.queueModal.style.display = 'block';
-            state.queueOverlay.style.display = 'block';
-            state.queueModalVisible = true;
-            state.currentLiveId = '';
-            state.queueResults = [];
-            updateQueueModalContent();
-            return;
-        }
-        createQueueModal();
-    }
-
-    function closeQueueModal() {
-        if (state.queueModal) {
-            state.queueModal.style.display = 'none';
-        }
-        if (state.queueOverlay) {
-            state.queueOverlay.style.display = 'none';
-        }
-        state.queueModalVisible = false;
-        state.currentLiveId = '';
-        state.queueResults = [];
-
-        state.pendingQueries.forEach((controller, queueId) => {
-            if (controller.abort) controller.abort();
-        });
-        state.pendingQueries.clear();
-        state.processedQueues.clear();
-    }
-
-    function createQueueModal() {
-        state.queueOverlay = document.createElement('div');
-        state.queueOverlay.id = 'ilabel-queue-overlay';
-        state.queueOverlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000000;
-            display: none;
-        `;
-        state.queueOverlay.addEventListener('click', closeQueueModal);
-        document.body.appendChild(state.queueOverlay);
-
-        state.queueModal = document.createElement('div');
-        state.queueModal.id = 'ilabel-queue-modal';
-        state.queueModal.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 600px;
-            max-width: 90vw;
-            max-height: 80vh;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.3);
-            z-index: 1000001;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            display: none;
-            overflow: hidden;
-        `;
-
-        state.queueModal.innerHTML = buildQueueModalHTML();
-        document.body.appendChild(state.queueModal);
-
-        bindQueueModalEvents();
-        updateQueueModalContent();
-
-        state.queueModal.style.display = 'block';
-        state.queueOverlay.style.display = 'block';
-        state.queueModalVisible = true;
-    }
-
-    function buildQueueModalHTML() {
-        return `
-            <div class="queue-modal-container" style="display: flex; flex-direction: column; height: 100%;">
-                <div class="queue-modal-header" style="display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #eee;">
-                    <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #333;">队列查询</h3>
-                    <button class="close-queue-btn" style="background: none; border: none; font-size: 24px; cursor: pointer; color: #999; line-height: 1; padding: 0 5px;">×</button>
-                </div>
-
-                <div class="queue-modal-body" style="padding: 20px; overflow-y: auto; flex: 1;">
-                    <div class="search-section" style="display: flex; gap: 10px; margin-bottom: 20px;">
-                        <input type="text" id="live-id-input" placeholder="请输入 Live ID" value="${state.currentLiveId}"
-                            style="flex: 1; padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;">
-                        <button id="search-queue-btn" class="search-btn" style="padding: 8px 20px; background: #2196f3; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500;">查询</button>
-                    </div>
-
-                    <div class="results-section" style="min-height: 200px;">
-                        <div class="results-header" style="display: flex; justify-content: space-between; margin-bottom: 12px; padding: 0 4px;">
-                            <span style="font-size: 14px; color: #666;">查询结果 <span id="result-tip" style="margin-left: 8px; font-size: 12px; color: #999;"></span></span>
-                            <span id="result-count" style="font-size: 14px; color: #999;">0/0</span>
-                        </div>
-
-                        <div id="queue-results-list" class="results-list" style="display: flex; flex-direction: column; gap: 8px;">
-                        </div>
-
-                        <div id="loading-indicator" style="display: none; text-align: center; padding: 40px 0; color: #999;">
-                            <div style="margin-bottom: 10px;">查询中...</div>
-                            <div style="width: 30px; height: 30px; border: 3px solid #f3f3f3; border-top: 3px solid #2196f3; border-radius: 50%; margin: 0 auto; animation: spin 1s linear infinite;"></div>
-                        </div>
-
-                        <div id="partial-results" style="display: none; text-align: center; padding: 20px 0; color: #999; border-top: 1px dashed #eee;">
-                            已显示部分结果，仍在查询中...
-                        </div>
-
-                        <div id="no-results" style="display: none; text-align: center; padding: 40px 0; color: #999;">
-                            暂无结果，请尝试其他 Live ID
-                        </div>
-                    </div>
-                </div>
-
-                <div class="queue-modal-footer" style="padding: 12px 20px; border-top: 1px solid #eee; font-size: 12px; color: #999; display: flex; justify-content: space-between;">
-                    <span>缓存: ${state.queueHitCache.size}条 | 统计: ${state.queueHitStats.size}队列</span>
-                    <span>队列数: ${state.queueList.length}</span>
-                </div>
-            </div>
-        `;
-    }
-
-    function bindQueueModalEvents() {
-        if (!state.queueModal) return;
-
-        const closeBtn = state.queueModal.querySelector('.close-queue-btn');
-        if (closeBtn) {
-            closeBtn.addEventListener('click', closeQueueModal);
-        }
-
-        const searchBtn = state.queueModal.querySelector('#search-queue-btn');
-        const liveIdInput = state.queueModal.querySelector('#live-id-input');
-
-        if (searchBtn) {
-            searchBtn.addEventListener('click', () => {
-                const liveId = liveIdInput.value.trim();
-                if (liveId) {
-                    state.currentLiveId = liveId;
-                    searchQueues(liveId);
-                } else {
-                    showToast('请输入 Live ID', 'error');
-                }
-            });
-        }
-
-        if (liveIdInput) {
-            liveIdInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    const liveId = liveIdInput.value.trim();
-                    if (liveId) {
-                        state.currentLiveId = liveId;
-                        searchQueues(liveId);
-                    } else {
-                        showToast('请输入 Live ID', 'error');
-                    }
-                }
-            });
-        }
-    }
-
-    function updateQueueModalContent() {
-        if (!state.queueModal) return;
-
-        const resultsList = state.queueModal.querySelector('#queue-results-list');
-        const loadingIndicator = state.queueModal.querySelector('#loading-indicator');
-        const partialResults = state.queueModal.querySelector('#partial-results');
-        const noResults = state.queueModal.querySelector('#no-results');
-        const resultCount = state.queueModal.querySelector('#result-count');
-        const resultTip = state.queueModal.querySelector('#result-tip');
-        const liveIdInput = state.queueModal.querySelector('#live-id-input');
-
-        if (liveIdInput) {
-            liveIdInput.value = state.currentLiveId;
-        }
-
-        if (state.isLoadingQueues) {
-            if (resultsList) resultsList.style.display = 'none';
-            if (noResults) noResults.style.display = 'none';
-            if (loadingIndicator) loadingIndicator.style.display = 'block';
-            if (partialResults) partialResults.style.display = 'none';
-            if (resultTip) resultTip.textContent = '';
-
-            const elapsed = Date.now() - state.searchStartTime;
-            if (resultCount) resultCount.textContent = `查询中... ${Math.floor(elapsed / 1000)}s`;
-        } else {
-            if (loadingIndicator) loadingIndicator.style.display = 'none';
-
-            if (state.queueResults.length > 0) {
-                if (resultsList) {
-                    resultsList.style.display = 'flex';
-                    resultsList.innerHTML = state.queueResults.map(queue => `
-                        <div class="queue-item" data-mid="${queue.mid}" data-title="${queue.title}" data-url="${queue.url}"
-                            style="padding: 12px 16px; background: #f5f5f5; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 1px solid transparent;"
-                            onmouseover="this.style.backgroundColor='#e8e8e8'; this.style.borderColor='#2196f3'"
-                            onmouseout="this.style.backgroundColor='#f5f5f5'; this.style.borderColor='transparent'">
-                            <div style="display: flex; justify-content: space-between; align-items: center;">
-                                <div style="font-weight: 600; color: #333;">${queue.title}</div>
-                                <span style="background: #4caf50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px;">命中: ${queue.total}</span>
-                            </div>
-                            <div style="font-size: 11px; color: #999; margin-top: 6px;">队列ID: ${queue.mid} | 响应: ${queue.responseTime}ms</div>
-                        </div>
-                    `).join('');
-
-                    resultsList.querySelectorAll('.queue-item').forEach(item => {
-                        item.addEventListener('click', () => {
-                            const url = item.dataset.url;
-                            if (url) {
-                                window.open(url, '_blank');
-                            }
-                        });
-                    });
-                }
-
-                if (state.processedQueues.size < state.queueList.length) {
-                    if (partialResults) {
-                        partialResults.style.display = 'block';
-                        partialResults.textContent = `已显示 ${state.queueResults.length}/${state.queueList.length} 个队列的结果，仍在查询中...`;
-                    }
-                    if (resultTip) resultTip.textContent = '(部分结果)';
-                } else {
-                    if (partialResults) partialResults.style.display = 'none';
-                    if (resultTip) resultTip.textContent = '';
-                }
-
-                if (noResults) noResults.style.display = 'none';
-                if (resultCount) resultCount.textContent = `${state.queueResults.length}/${state.processedQueues.size}`;
-            } else {
-                if (resultsList) resultsList.style.display = 'none';
-                if (noResults) noResults.style.display = 'block';
-                if (partialResults) partialResults.style.display = 'none';
-                if (resultTip) resultTip.textContent = '';
-                if (resultCount) resultCount.textContent = '0/0';
-            }
-        }
-    }
-
-    function addQueueResult(result) {
-        const exists = state.queueResults.some(r => r.mid === result.mid);
-        if (!exists) {
-            state.queueResults.push(result);
-            state.queueResults.sort((a, b) => {
-                if (a.total !== b.total) return b.total - a.total;
-                return a.responseTime - b.responseTime;
-            });
-            updateQueueModalContent();
-        }
-    }
-
-    async function searchQueues(liveId) {
-        state.pendingQueries.forEach((controller, queueId) => {
-            if (controller.abort) controller.abort();
-        });
-        state.pendingQueries.clear();
-        state.processedQueues.clear();
-
-        state.isLoadingQueues = true;
-        state.queueResults = [];
-        state.searchStartTime = Date.now();
-        updateQueueModalContent();
-
-        try {
-            if (state.queueList.length === 0) {
-                await preloadQueueList();
-            }
-
-            const sortedQueues = [...state.queueList].sort((a, b) => {
-                const priorityA = getQueuePriority(a.id);
-                const priorityB = getQueuePriority(b.id);
-                return priorityB - priorityA;
-            });
-
-            const batches = [];
-            for (let i = 0; i < sortedQueues.length; i += QUEUE_CONFIG.BATCH_SIZE) {
-                batches.push(sortedQueues.slice(i, i + QUEUE_CONFIG.BATCH_SIZE));
-            }
-
-            for (const batch of batches) {
-                const promises = batch.map(mission => checkQueueHitWithCache(mission, liveId));
-                await Promise.all(promises);
-                updateQueueModalContent();
-            }
-
-        } catch (error) {
-            console.error('队列查询失败:', error);
-            showToast('查询失败: ' + error.message, 'error');
-        } finally {
-            state.isLoadingQueues = false;
-            updateQueueModalContent();
-            if (state.featuresEnabled) {
-                saveQueueCache();
-            }
-
-            const elapsed = Date.now() - state.searchStartTime;
-            console.log(`查询完成，耗时: ${elapsed}ms，命中: ${state.queueResults.length}个队列`);
-        }
-    }
-
-    async function checkQueueHitWithCache(mission, liveId) {
-        const queueId = mission.id;
-        state.processedQueues.add(queueId);
-
-        const cacheKey = `${liveId}_${queueId}`;
-        const cached = state.queueHitCache.get(cacheKey);
-
-        if (cached && (Date.now() - cached.timestamp) < QUEUE_CONFIG.CACHE_EXPIRY) {
-            console.log(`使用缓存: 队列 ${mission.title} 命中数 ${cached.total}`);
-
-            if (cached.total > 0) {
-                const detailUrl = `https://ilabel.weixin.qq.com/mission/${queueId}/modify?title=${encodeURIComponent(mission.title)}&status=all&answer=${encodeURIComponent(JSON.stringify({ key: 'live_id', op: '=', value: liveId }))}`;
-
-                addQueueResult({
-                    mid: queueId,
-                    title: mission.title,
-                    total: cached.total,
-                    url: detailUrl,
-                    responseTime: 0
-                });
-            }
-
-            return {
-                mid: queueId,
-                title: mission.title,
-                total: cached.total,
-                url: '',
-                responseTime: 0
-            };
-        }
-
-        const controller = new AbortController();
-        state.pendingQueries.set(queueId, controller);
-
-        const startTime = Date.now();
-
-        try {
-            const answerParam = JSON.stringify([{
-                key: 'live_id',
-                op: '=',
-                value: liveId
-            }]);
-
-            const url = `${QUEUE_API.HITS}?mid=${queueId}&pagesize=3&pageindex=1&query=&status=all&marker=&hit_id=&answer_id=&second_status=all&answer=${encodeURIComponent(answerParam)}&content_query=[]`;
-
-            const result = await new Promise((resolve) => {
-                GM_xmlhttpRequest({
-                    method: 'GET',
-                    url: url,
-                    headers: {
-                        'accept': 'application/json, text/plain, */*',
-                        'x-requested-with': 'XMLHttpRequest'
-                    },
-                    onload: function (response) {
-                        const responseTime = Date.now() - startTime;
-
-                        try {
-                            if (response.status === 200) {
-                                const data = JSON.parse(response.responseText);
-                                if (data.status === 'ok') {
-                                    const total = data.data?.total || 0;
-
-                                    if (state.featuresEnabled) {
-                                        saveToHitCache(liveId, queueId, total);
-                                    }
-
-                                    if (total > 0) {
-                                        const detailUrl = `https://ilabel.weixin.qq.com/mission/${queueId}/modify?title=${encodeURIComponent(mission.title)}&status=all&answer=${encodeURIComponent(JSON.stringify({ key: 'live_id', op: '=', value: liveId }))}`;
-
-                                        addQueueResult({
-                                            mid: queueId,
-                                            title: mission.title,
-                                            total: total,
-                                            url: detailUrl,
-                                            responseTime: responseTime
-                                        });
-                                    }
-
-                                    resolve({
-                                        mid: queueId,
-                                        title: mission.title,
-                                        total: total,
-                                        url: '',
-                                        responseTime: responseTime
-                                    });
-                                } else {
-                                    resolve({
-                                        mid: queueId,
-                                        title: mission.title,
-                                        total: 0,
-                                        url: '',
-                                        responseTime: responseTime
-                                    });
-                                }
-                            } else {
-                                resolve({
-                                    mid: queueId,
-                                    title: mission.title,
-                                    total: 0,
-                                    url: '',
-                                    responseTime: responseTime
-                                });
-                            }
-                        } catch (e) {
-                            console.error(`解析队列 ${mission.title} 响应失败:`, e);
-                            resolve({
-                                mid: queueId,
-                                title: mission.title,
-                                total: 0,
-                                url: '',
-                                responseTime: responseTime
-                            });
-                        }
-                    },
-                    onerror: function (error) {
-                        console.error(`查询队列 ${mission.title} 网络错误:`, error);
-                        resolve({
-                            mid: queueId,
-                            title: mission.title,
-                            total: 0,
-                            url: '',
-                            responseTime: Date.now() - startTime
-                        });
-                    }
-                });
-            });
-
-            state.pendingQueries.delete(queueId);
-            return result;
-
-        } catch (error) {
-            console.error(`查询队列 ${mission.title} 异常:`, error);
-            state.pendingQueries.delete(queueId);
-            return {
-                mid: queueId,
-                title: mission.title,
-                total: 0,
-                url: '',
-                responseTime: Date.now() - startTime
-            };
-        }
-    }
-
-    // ========== 队列缓存和统计功能 ==========
-    async function preloadQueueList() {
-        if (!state.featuresEnabled) return;
-
-        try {
-            const cached = GM_getValue(STORAGE_KEYS.QUEUE_LIST, null);
-            const timestamp = GM_getValue(STORAGE_KEYS.QUEUE_LIST_TIMESTAMP, 0);
-
-            if (cached && (Date.now() - timestamp) < 24 * 60 * 60 * 1000) {
-                state.queueList = JSON.parse(cached);
-                console.log('使用缓存的队列列表，共', state.queueList.length, '个队列');
-                return;
-            }
-
-            console.log('正在加载队列列表...');
-            const missions = await fetchQueueList();
-            state.queueList = missions;
-
-            GM_setValue(STORAGE_KEYS.QUEUE_LIST, JSON.stringify(missions));
-            GM_setValue(STORAGE_KEYS.QUEUE_LIST_TIMESTAMP, Date.now());
-
-            console.log('队列列表加载完成，共', missions.length, '个队列');
-        } catch (error) {
-            console.error('预加载队列列表失败', error);
-            const cached = GM_getValue(STORAGE_KEYS.QUEUE_LIST, null);
-            if (cached) {
-                state.queueList = JSON.parse(cached);
-                console.log('使用旧缓存队列列表，共', state.queueList.length, '个队列');
-            }
-        }
-    }
-
-    function loadQueueCache() {
-        if (!state.featuresEnabled) return;
-
-        try {
-            const hitCache = GM_getValue(STORAGE_KEYS.QUEUE_HIT_CACHE, '{}');
-            const cache = JSON.parse(hitCache);
-
-            const now = Date.now();
-            Object.entries(cache).forEach(([key, value]) => {
-                if (now - value.timestamp < QUEUE_CONFIG.CACHE_EXPIRY) {
-                    state.queueHitCache.set(key, value);
-                }
-            });
-
-            console.log('加载命中缓存:', state.queueHitCache.size, '条');
-
-            const hitStats = GM_getValue(STORAGE_KEYS.QUEUE_HIT_STATS, '{}');
-            const stats = JSON.parse(hitStats);
-            Object.entries(stats).forEach(([queueId, count]) => {
-                state.queueHitStats.set(parseInt(queueId), count);
-            });
-
-            console.log('加载命中统计:', state.queueHitStats.size, '个队列');
-        } catch (e) {
-            console.error('加载队列缓存失败', e);
-        }
-    }
-
-    function saveToHitCache(liveId, queueId, total) {
-        const key = `${liveId}_${queueId}`;
-        state.queueHitCache.set(key, {
-            total,
-            timestamp: Date.now()
-        });
-
-        if (total > 0) {
-            const currentCount = state.queueHitStats.get(queueId) || 0;
-            state.queueHitStats.set(queueId, currentCount + 1);
-        }
-
-        state.queryCount++;
-        if (state.queryCount % QUEUE_CONFIG.STATS_UPDATE_INTERVAL === 0) {
-            saveQueueCache();
-        }
-    }
-
-    function saveQueueCache() {
-        try {
-            const cacheObj = {};
-            state.queueHitCache.forEach((value, key) => {
-                cacheObj[key] = value;
-            });
-            GM_setValue(STORAGE_KEYS.QUEUE_HIT_CACHE, JSON.stringify(cacheObj));
-
-            const statsObj = {};
-            state.queueHitStats.forEach((value, key) => {
-                statsObj[key] = value;
-            });
-            GM_setValue(STORAGE_KEYS.QUEUE_HIT_STATS, JSON.stringify(statsObj));
-        } catch (e) {
-            console.error('保存队列缓存失败', e);
-        }
-    }
-
-    function getQueuePriority(queueId) {
-        const hitCount = state.queueHitStats.get(queueId) || 0;
-        return hitCount;
-    }
-
-    function fetchQueueList() {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: QUEUE_API.LIST,
-                headers: {
-                    'accept': 'application/json, text/plain, */*',
-                    'x-requested-with': 'XMLHttpRequest'
-                },
-                onload: function (response) {
-                    try {
-                        if (response.status === 200) {
-                            const data = JSON.parse(response.responseText);
-                            if (data.status === 'ok' && data.data?.missions) {
-                                resolve(data.data.missions);
-                            } else {
-                                reject(new Error('获取队列列表失败'));
-                            }
-                        } else {
-                            reject(new Error(`HTTP ${response.status}`));
-                        }
-                    } catch (e) {
-                        reject(e);
-                    }
-                },
-                onerror: reject
-            });
-        });
-    }
-
-    // ========== 提示显示 ==========
-    function showPrompt(liveData, types) {
-        if (!state.featuresEnabled) return;
-
-        state.currentLiveData = liveData;
-        state.currentTypes = types;
-        state.isConfirmed = false;
-        state.lastPopupTime = Date.now();
-        state.popupConfirmed = false;
-
-        // 记录获取到liveid的系统时间戳（毫秒）
-        state.liveIdReceiveTimestamp = Date.now();
-        console.log('LiveID获取时间戳:', state.liveIdReceiveTimestamp, new Date(state.liveIdReceiveTimestamp).toLocaleTimeString());
-
-        closePrompt();
-        createPrompt();
-        startPushTimer();
-        startAlarmCheck();
-
-        if (state.spaceHandler) {
-            document.removeEventListener('keydown', state.spaceHandler);
-        }
-
-        state.spaceHandler = (e) => {
-            if (e.code === 'Space' && !state.isConfirmed && document.getElementById('ilabel-prompt-container')) {
-                e.preventDefault();
-                e.stopPropagation();
-                handleConfirmAndCopy();
-            }
-        };
-
-        document.addEventListener('keydown', state.spaceHandler);
-
-        if (state.userConfig.alarmRing) {
-            setTimeout(() => playAlarm(), 100);
-        }
-    }
-
-    function closePrompt() {
-        if (state.promptContainer) {
-            state.promptContainer.remove();
-            state.promptContainer = null;
-        }
-        if (state.pushInterval) {
-            clearInterval(state.pushInterval);
-            state.pushInterval = null;
-        }
-        if (state.alarmCheckInterval) {
-            clearInterval(state.alarmCheckInterval);
-            state.alarmCheckInterval = null;
-        }
-        if (state.spaceHandler) {
-            document.removeEventListener('keydown', state.spaceHandler);
-            state.spaceHandler = null;
-        }
-        stopAlarm();
-        state.isConfirmed = false;
-        state.popupConfirmed = true;
-    }
-
-    function copyLiveId() {
-        if (state.currentLiveData?.liveId) {
-            navigator.clipboard.writeText(state.currentLiveData.liveId).then(() => {
-                console.log('LiveID已复制:', state.currentLiveData.liveId);
-                const toast = document.createElement('div');
-                toast.style.cssText = `
-                    position: fixed;
-                    top: 50%;
-                    left: 50%;
-                    transform: translate(-50%, -50%);
-                    padding: 8px 16px;
-                    background: rgba(0,0,0,0.8);
-                    color: white;
-                    border-radius: 4px;
-                    font-size: 14px;
-                    z-index: 1000002;
-                    animation: fadeInOut 1s ease;
-                `;
-                toast.textContent = 'LiveID已复制';
-                document.body.appendChild(toast);
-                setTimeout(() => toast.remove(), 1000);
-            }).catch(err => {
-                console.error('复制失败:', err);
-            });
-        }
-    }
-
-    function handleConfirmAndCopy() {
-        if (state.isConfirmed) return;
-
-        state.isConfirmed = true;
-        state.popupConfirmed = true;
-
-        copyLiveId();
-
-        const confirmWrapper = document.querySelector('.confirm-wrapper');
-        if (confirmWrapper) {
-            confirmWrapper.remove();
-        }
-
-        if (state.pushInterval) {
-            clearInterval(state.pushInterval);
-            state.pushInterval = null;
-        }
-        stopAlarm();
-    }
-
-    function createPrompt() {
-        state.promptContainer = document.createElement('div');
-        state.promptContainer.id = 'ilabel-prompt-container';
-        state.promptContainer.style.cssText = `
-            position: fixed;
-            left: ${state.userConfig.promptPosition.x}px;
-            top: ${state.userConfig.promptPosition.y}px;
-            z-index: 1000000;
-            transform: scale(${state.userConfig.promptSize / 100});
-            transform-origin: left top;
-            cursor: move;
-            user-select: none;
-            opacity: ${state.userConfig.promptOpacity / 100};
-        `;
-
-        const wrapper = document.createElement('div');
-        wrapper.style.cssText = `
-            display: flex;
-            gap: 0;
-            ${state.userConfig.promptArrange === 'vertical' ? 'flex-direction: column;' : ''}
-            background: transparent;
-            padding: 0;
-        `;
-
-        state.currentTypes.forEach(type => {
-            const tag = createTypeTag(type);
-            wrapper.appendChild(tag);
-        });
-
-        const confirmWrapper = document.createElement('div');
-        confirmWrapper.className = 'confirm-wrapper';
-
-        const confirmBtn = createConfirmButton();
-        confirmWrapper.appendChild(confirmBtn);
-        wrapper.appendChild(confirmWrapper);
-
-        if (state.userConfig.promptArrange === 'horizontal') {
-            setTimeout(() => {
-                const items = wrapper.querySelectorAll('.prompt-tag, .prompt-confirm-btn');
-                const height = 28;
-                items.forEach(item => {
-                    item.style.width = (height * 2) + 'px';
-                    item.style.textAlign = 'center';
-                    item.style.padding = '6px 0';
-                });
-            }, 0);
-        }
-
-        if (state.userConfig.promptArrange === 'vertical') {
-            setTimeout(() => {
-                const items = wrapper.querySelectorAll('.prompt-tag, .prompt-confirm-btn');
-                items.forEach(item => {
-                    item.style.width = 'auto';
-                    item.style.minWidth = '56px';
-                    item.style.padding = '6px 16px';
-                    item.style.textAlign = 'center';
-                });
-
-                const maxWidth = Math.max(...Array.from(items).map(item => item.offsetWidth));
-                items.forEach(item => {
-                    item.style.width = maxWidth + 'px';
-                });
-            }, 0);
-        }
-
-        state.promptContainer.appendChild(wrapper);
-        document.body.appendChild(state.promptContainer);
-
-        makeDraggable(state.promptContainer);
-    }
-
-    function createTypeTag(type) {
-        const tag = document.createElement('div');
-        tag.className = 'prompt-tag';
-        const color = TYPE_COLORS[type] || TYPE_COLORS.normal || '#ffffff';
-        const textColor = getContrastColor(color);
-
-        tag.style.cssText = `
-            padding: 6px 16px;
-            background-color: ${color};
-            color: ${textColor};
-            font-size: 12px;
-            font-weight: bold;
-            white-space: nowrap;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-            border-radius: 20px;
-            margin: 0;
-        `;
-
-        tag.textContent = TYPE_NAMES[type] || type;
-        return tag;
-    }
-
-    function createConfirmButton() {
-        const btn = document.createElement('div');
-        btn.className = 'prompt-confirm-btn';
-        btn.style.cssText = `
-            padding: 6px 16px;
-            background-color: #f44336;
-            color: white;
-            font-size: 12px;
-            font-weight: bold;
-            white-space: nowrap;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-            cursor: pointer;
-            border: none;
-            border-radius: 20px;
-            margin: 0;
-            text-align: center;
-            transition: all 0.2s;
-        `;
-        btn.textContent = '确认';
-
-        btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            handleConfirmAndCopy();
-        });
-
-        btn.addEventListener('mouseenter', () => {
-            if (!state.isConfirmed) {
-                btn.style.backgroundColor = '#d32f2f';
-            }
-        });
-
-        btn.addEventListener('mouseleave', () => {
-            if (!state.isConfirmed) {
-                btn.style.backgroundColor = '#f44336';
-            }
-        });
-
-        return btn;
-    }
-
-    function makeDraggable(element) {
-        let isDragging = false;
-        let dragOffset = { x: 0, y: 0 };
-
-        element.addEventListener('mousedown', startDrag);
-
-        function startDrag(e) {
-            if (e.target.classList.contains('prompt-confirm-btn')) return;
-
-            isDragging = true;
-            const rect = element.getBoundingClientRect();
-            dragOffset.x = e.clientX - rect.left;
-            dragOffset.y = e.clientY - rect.top;
-            element.style.cursor = 'grabbing';
-
-            document.addEventListener('mousemove', drag);
-            document.addEventListener('mouseup', stopDrag);
-            e.preventDefault();
-        }
-
-        function drag(e) {
-            if (!isDragging) return;
-            const x = e.clientX - dragOffset.x;
-            const y = e.clientY - dragOffset.y;
-            element.style.left = x + 'px';
-            element.style.top = y + 'px';
-            state.userConfig.promptPosition = { x, y };
-        }
-
-        function stopDrag() {
-            if (!isDragging) return;
-            isDragging = false;
-            element.style.cursor = 'move';
-            document.removeEventListener('mousemove', drag);
-            document.removeEventListener('mouseup', stopDrag);
-            saveUserConfig();
-        }
-    }
-
-    function startPushTimer() {
-        if (!state.featuresEnabled) return;
-        if (!state.globalConfig?.pushUrl?.reminderPushUrl || !state.userConfig.alarmRing) return;
-
-        state.lastPushTime = Date.now();
-        state.pushInterval = setInterval(() => {
-            if (state.isConfirmed || !state.currentLiveData) return;
-
-            const now = Date.now();
-            if (now - state.lastPushTime >= 20000) {
-                sendReminderPush();
-                state.lastPushTime = now;
-            }
-        }, 1000);
-    }
-
-    function sendReminderPush() {
-        if (!state.featuresEnabled) return;
-
-        const pushUrl = state.globalConfig?.pushUrl?.reminderPushUrl;
-        if (!pushUrl) return;
-
-        const timeStr = formatTime24();
-        const typeNames = state.currentTypes.map(t => TYPE_NAMES[t]).join('、');
-        const content = `${timeStr} ${typeNames}单未确认`;
-
-        const auditorName = state.currentLiveData?.auditor;
-        let mentionedMobile = null;
-
-        if (auditorName && state.globalConfig?.auditorWhiteList) {
-            const auditor = state.globalConfig.auditorWhiteList.find(a => a.name === auditorName);
-            if (auditor) mentionedMobile = auditor.mobile;
-        }
-
-        const data = {
-            msgtype: "text",
-            text: { content }
-        };
-        if (mentionedMobile) data.text.mentioned_mobile_list = [mentionedMobile];
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: pushUrl,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify(data),
-            timeout: 5000,
-            onload: (r) => {
-                if (r.status === 200) {
-                    console.log('推送成功');
-                } else {
-                    console.error('推送失败', r.status);
-                }
-            },
-            onerror: console.error
-        });
-    }
-
-    // ========== 最小提交时限检查函数（使用系统时间戳差值） ==========
-    function checkMinSubmitTime() {
-        // 如果没有记录获取时间戳，允许提交
-        if (state.liveIdReceiveTimestamp === null) {
-            console.log('未记录LiveID获取时间戳，跳过最小时限检查');
-            return { valid: true };
-        }
-
-        const minSeconds = state.userConfig.minSubmitTime || 0;
-
-        // 如果时限为0，不限制
-        if (minSeconds <= 0) {
-            return { valid: true };
-        }
-
-        // 计算时间差（毫秒）
-        const elapsedMilliseconds = Date.now() - state.liveIdReceiveTimestamp;
-        const elapsedSeconds = elapsedMilliseconds / 1000;
-
-        if (elapsedSeconds < minSeconds) {
-            const remainingSeconds = Math.ceil(minSeconds - elapsedSeconds);
-            console.log(`最小提交时限检查: 已过${elapsedSeconds.toFixed(1)}秒，需要至少${minSeconds}秒，还需等待${remainingSeconds}秒`);
-            return {
-                valid: false,
-                remainingSeconds: remainingSeconds,
-                message: `答案需超过 ${minSeconds} 秒，还需等待 ${remainingSeconds} 秒`
-            };
-        }
-
-        console.log(`最小提交时限检查通过: 已过${elapsedSeconds.toFixed(1)}秒，大于等于${minSeconds}秒`);
-        return { valid: true };
-    }
-
-    // ========== 请求拦截 ==========
-    function setupRequestInterception() {
-        const originalFetch = window.fetch;
-        window.fetch = function (...args) {
-            const url = args[0];
-            const options = args[1] || {};
-
-            // 拦截答案提交请求 - 在发送前进行验证
-            if (typeof url === 'string' && url.includes('/api/answers') && options.method === 'POST') {
-
-                // 在请求发送前进行验证
-                try {
-                    // 先检查最小提交时限
-                    const timeCheckResult = checkMinSubmitTime();
-                    if (!timeCheckResult.valid) {
-                        console.log('最小提交时限验证失败，阻止请求发送', timeCheckResult.message);
-                        showValidationToast(timeCheckResult.message);
-                        return Promise.reject(new Error(timeCheckResult.message));
-                    }
-
-                    const body = options.body;
-                    console.log('拦截到答案提交请求，开始前置验证');
-
-                    // 调用验证函数
-                    const validationResult = validateAnswerSubmit(body);
-
-                    // 如果验证失败，阻止请求发送
-                    if (!validationResult.valid) {
-                        console.log('验证失败，阻止请求发送', validationResult.errors);
-
-                        // 显示提示
-                        showValidationToast(validationResult.errors);
-
-                        // 返回一个被拒绝的Promise，阻止请求发送
-                        return Promise.reject(new Error('验证失败：' + validationResult.errors.join(', ')));
-                    }
-
-                    console.log('验证通过，允许请求发送');
-                } catch (error) {
-                    console.error('验证过程出错', error);
-                    // 出错时也阻止请求，避免不完整的请求发送
-                    return Promise.reject(error);
-                }
-            }
-
-            // 验证通过或非答案提交请求，正常发送
-            return originalFetch.apply(this, args).then(response => {
-                // 后续处理（用于推送等）
-                if (typeof url === 'string' && url.includes('/api/answers') && response.ok) {
-                    response.clone().json().then(data => {
-                        if (data.status === 'ok') {
-                            // 注意：这里使用原始的body，因为options.body可能已经被消费
-                            handleAnswerSubmit(options.body);
-                        }
-                    }).catch(() => { });
-                }
-                return response;
-            }).catch(error => {
-                // 如果是我们主动拒绝的请求，不打印错误堆栈
-                if (error.message && (error.message.startsWith('验证失败：') || error.message.includes('答案需超过'))) {
-                    console.log('请求已被拦截:', error.message);
-                } else {
-                    // 其他错误正常抛出
-                    throw error;
-                }
-            });
-        };
-
-        const originalOpen = XMLHttpRequest.prototype.open;
-        const originalSend = XMLHttpRequest.prototype.send;
-
-        XMLHttpRequest.prototype.open = function (method, url) {
-            this._method = method.toUpperCase();
-            this._url = url;
-            return originalOpen.apply(this, arguments);
-        };
-
-        XMLHttpRequest.prototype.send = function (body) {
-            const xhr = this;
-
-            // 拦截答案提交请求 - 在发送前进行验证
-            if (xhr._method === 'POST' && xhr._url && xhr._url.includes('/api/answers')) {
-
-                // 在请求发送前进行验证
-                try {
-                    // 先检查最小提交时限
-                    const timeCheckResult = checkMinSubmitTime();
-                    if (!timeCheckResult.valid) {
-                        console.log('最小提交时限验证失败，阻止XHR请求发送', timeCheckResult.message);
-                        showValidationToast(timeCheckResult.message);
-                        // 模拟一个错误响应
-                        setTimeout(() => {
-                            xhr.dispatchEvent(new ProgressEvent('error'));
-                        }, 0);
-                        // 阻止请求发送
-                        return;
-                    }
-
-                    console.log('拦截到XHR答案提交请求，开始前置验证');
-
-                    const validationResult = validateAnswerSubmit(body);
-
-                    if (!validationResult.valid) {
-                        console.log('验证失败，阻止XHR请求发送', validationResult.errors);
-
-                        // 显示提示
-                        showValidationToast(validationResult.errors);
-
-                        // 模拟一个错误响应
-                        setTimeout(() => {
-                            xhr.dispatchEvent(new ProgressEvent('error'));
-                        }, 0);
-
-                        // 阻止请求发送
-                        return;
-                    }
-
-                    console.log('验证通过，允许XHR请求发送');
-                } catch (error) {
-                    console.error('验证过程出错', error);
-                    // 阻止请求发送
-                    return;
-                }
-            }
-
-            if (xhr._url && xhr._url.includes('get_live_info_batch')) {
-                xhr.addEventListener('load', () => {
-                    if (xhr.status === 200) {
-                        try {
-                            const data = JSON.parse(xhr.responseText);
-                            if (data.ret === 0 && data.liveInfoList?.length > 0) {
-                                handleLiveInfo(data.liveInfoList[0]);
-                            }
-                        } catch (e) { }
-                    }
-                });
-            }
-
-            if (xhr._method === 'POST' && xhr._url && xhr._url.includes('/api/answers')) {
-                xhr.addEventListener('load', () => {
-                    if (xhr.status === 200) {
-                        try {
-                            const data = JSON.parse(xhr.responseText);
-                            if (data.status === 'ok') {
-                                handleAnswerSubmit(body);
-                            }
-                        } catch (e) { }
-                    }
-                });
-            }
-
-            return originalSend.call(this, body);
-        };
-    }
-
-    // ========== 答案验证函数（独立，用于前置拦截） ==========
-    function validateAnswerSubmit(body) {
-        const errors = [];
-
-        try {
-            const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
-
-            if (!parsedBody.results) {
-                return { valid: true, errors: [] }; // 没有results，跳过验证
-            }
-
-            // 检查答案校验开关
-            if (!state.userConfig.answerValidation) {
-                return { valid: true, errors: [] };
-            }
-
-            // 获取验证规则
-            const validationRules = state.globalConfig?.validationRules || {
-                requireProductIdTags: [],
-                requireVideoImagePositions: ['主播口播', '直播画面']
-            };
-
-            // 遍历所有审核结果进行验证
-            Object.values(parsedBody.results).forEach(result => {
-                if (!result) return;
-
-                const finderItem = result.finder_object?.[0];
-                if (!finderItem) return;
-
-                const reasonLabel = finderItem.reason_label ||
-                    finderItem.ext_info?.reason_label ||
-                    (finderItem.ext_info?.punish_keyword_path?.[finderItem.ext_info.punish_keyword_path.length - 1]);
-
-                const punishContent = finderItem.ext_info?.punish_content;
-                const productId = finderItem.ext_info?.product_id;
-                const imgUrls = finderItem.img_url || [];
-                const clipTimes = finderItem.clip_times || [];
-                const remark = finderItem.remark;
-
-                // 验证1：需要商品ID的标签
-                if (reasonLabel && validationRules.requireProductIdTags.includes(reasonLabel)) {
-                    if (!productId || (Array.isArray(productId) && productId.length === 0)) {
-                        errors.push('该标签需提供商品id');
-                    }
-                }
-
-                // 验证2：违规位置需要视频/图片证据
-                if (punishContent && validationRules.requireVideoImagePositions.includes(punishContent)) {
-                    if ((!clipTimes || clipTimes.length === 0) &&
-                        (!imgUrls || imgUrls.length === 0)) {
-                        errors.push('视频/图片证据不能为空');
-                    }
-                }
-
-                // 验证3：有处罚标签就需要图片证据和违规备注
-                if (reasonLabel) {
-                    if (!imgUrls || imgUrls.length === 0) {
-                        errors.push('图片证据不能为空');
-                    }
-                    if (!remark || remark.trim() === '') {
-                        errors.push('违规备注不能为空');
-                    }
-                }
-            });
-
-        } catch (error) {
-            console.error('验证解析失败', error);
-            return { valid: true, errors: [] }; // 解析失败时不阻止请求
-        }
-
-        return {
-            valid: errors.length === 0,
-            errors: [...new Set(errors)] // 去重
-        };
-    }
-
-    // ========== 数据处理 ==========
-    async function handleLiveInfo(liveInfo) {
-        try {
-            const auditor = await getAuditorInfo();
-            const auditInfo = await getAuditInfo();
-
-            const liveData = {
-                liveId: liveInfo.liveId || '',
-                anchorUserId: liveInfo.anchorUserId || '',
-                nickname: liveInfo.nickname || '',
-                authStatus: liveInfo.authStatus || '',
-                signature: liveInfo.signature || '',
-                description: liveInfo.description || '',
-                createLiveArea: liveInfo.extraField?.createLiveArea || '',
-                poiName: liveInfo.poiName || '',
-                streamStartTime: liveInfo.streamStartTime || '',
-                auditTime: auditInfo.audit_time || 0,
-                auditor: auditor,
-                auditRemark: auditInfo.auditRemark || ''
-            };
-
-            state.currentLiveData = liveData;
-
-            if (state.featuresEnabled) {
-                const types = checkAllTypes(liveData);
-                state.currentTypes = types;
-                console.log('直播信息分析结果:', { liveData, types });
-
-                const filteredTypes = types.filter(type => state.userConfig.promptType.includes(type));
-
-                if (filteredTypes.length > 0 || state.userConfig.alarmRing) {
-                    showPrompt(liveData, filteredTypes);
-                }
-            } else {
-                console.log('功能未启用，不显示提示');
-            }
-        } catch (error) {
-            console.error('处理直播信息失败', error);
-        }
-    }
-
-    function handleAnswerSubmit(body) {
-        try {
-            console.log('========== 开始处理审核结果 ==========');
-            console.log('原始请求体:', body);
-
-            const parsedBody = typeof body === 'string' ? JSON.parse(body) : body;
-            console.log('解析后的请求体:', parsedBody);
-
-            if (!parsedBody.results) {
-                console.log('未找到results字段，退出处理');
-                return;
-            }
-
-            // 验证通过，处理审核结果
-            processAnswerResults(parsedBody);
-
-        } catch (error) {
-            console.error('处理答案提交失败', error);
-            console.error('错误堆栈:', error.stack);
-        }
-    }
-
-    // 新增：处理审核结果的函数
-    function processAnswerResults(parsedBody) {
-        try {
-            console.log('========== 开始处理审核结果 ==========');
-
-            Object.values(parsedBody.results).forEach(result => {
-                if (!result) return;
-
-                console.log('处理单个审核结果:', result);
-
-                const taskId = result.task_id || '';
-                const liveId = result.live_id || '';
-                const midStr = result.mid_str || '';
-
-                console.log('任务ID:', taskId);
-                console.log('直播ID:', liveId);
-                console.log('队列ID(mid_str):', midStr);
-
-                let operator = '未知操作人';
-                if (result.oper_name && result.oper_name.includes('-')) {
-                    operator = result.oper_name.split('-').pop().trim();
-                    console.log('从oper_name提取操作人:', operator, '原始值:', result.oper_name);
-                } else if (result.oper_name) {
-                    operator = result.oper_name.trim();
-                    console.log('直接使用操作人:', operator);
-                }
-
-                let conclusion = '不处罚';
-                let reasonLabel = null;
-                let remark = null;
-
-                if (result.finder_object && Array.isArray(result.finder_object) && result.finder_object.length > 0) {
-                    console.log('finder_object存在，长度:', result.finder_object.length);
-
-                    const finderItem = result.finder_object[0];
-                    console.log('第一个finder_item:', finderItem);
-
-                    if (finderItem.reason_label) {
-                        reasonLabel = finderItem.reason_label;
-                        console.log('✓ 使用 finder_item.reason_label:', reasonLabel);
-                    }
-                    else if (finderItem.ext_info) {
-                        console.log('ext_info存在，内容:', JSON.stringify(finderItem.ext_info, null, 2));
-
-                        if (finderItem.ext_info.reason_label) {
-                            reasonLabel = finderItem.ext_info.reason_label;
-                            console.log('✓ 使用 ext_info.reason_label:', reasonLabel);
-                        }
-                        else if (finderItem.ext_info.punish_keyword_path &&
-                            Array.isArray(finderItem.ext_info.punish_keyword_path) &&
-                            finderItem.ext_info.punish_keyword_path.length > 0) {
-                            reasonLabel = finderItem.ext_info.punish_keyword_path[finderItem.ext_info.punish_keyword_path.length - 1];
-                            console.log('⚠ 使用 punish_keyword_path 最后一个:', reasonLabel);
-                        }
-                        else if (finderItem.ext_info.punish_keyword) {
-                            reasonLabel = finderItem.ext_info.punish_keyword;
-                            console.log('⚠ 使用 punish_keyword:', reasonLabel);
-                        }
-                    }
-
-                    remark = finderItem.remark || null;
-                    console.log('备注信息:', remark);
-                }
-
-                if (reasonLabel) {
-                    conclusion = remark ? `${reasonLabel}（${remark}）` : reasonLabel;
-                    console.log('最终结论:', conclusion);
-                } else {
-                    console.log('⚠ 未找到任何处罚标签，使用默认结论:', conclusion);
-                }
-
-                const auditData = {
-                    task_id: taskId,
-                    live_id: liveId,
-                    mid_str: midStr,
-                    conclusion: conclusion,
-                    operator: operator
-                };
-
-                console.log('审核结果数据:', auditData);
-                console.log('========== 准备推送 ==========');
-
-                sendAnswerPush(auditData);
-            });
-        } catch (error) {
-            console.error('处理审核结果失败', error);
-        }
-    }
-
-    function sendAnswerPush(auditData) {
-        const pushUrl = state.globalConfig?.pushUrl?.answerPushUrl;
-        if (!pushUrl) return;
-
-        const timeStr = formatTime24();
-        const content = `队列：${auditData.mid_str}\n审核：${auditData.operator}（${timeStr}）\ntaskID：${auditData.task_id}\nliveID：${auditData.live_id}\n审核结案：${auditData.conclusion}`;
-
-        GM_xmlhttpRequest({
-            method: 'POST',
-            url: pushUrl,
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify({ msgtype: "text", text: { content } }),
-            timeout: 5000,
-            onload: (r) => {
-                if (r.status === 200) {
-                    console.log('答案推送成功');
-                    if (state.featuresEnabled) {
-                        closePrompt();
-                    }
-                } else {
-                    console.error('答案推送失败', r.status);
-                }
-            },
-            onerror: console.error
-        });
-    }
-
-    function checkAllTypes(liveData) {
-        const types = [];
-        const config = state.globalConfig;
-        if (!config) return types;
-
-        if (isPrefilledOrder(liveData)) types.push('prefilled');
-        if (isExempted(liveData, config)) types.push('exempted');
-        if (liveData.auditRemark?.includes('复核')) types.push('review');
-        if (liveData.auditRemark?.includes('辛苦注意审核')) types.push('targeted');
-
-        const penaltyResult = checkPenalty(liveData, config);
-        if (penaltyResult.found) types.push('penalty');
-
-        if (liveData.auditRemark?.includes('辛苦核实')) types.push('note');
-        if (liveData.auditRemark?.includes('投诉')) types.push('complaint');
-
-        if (types.length === 0) types.push('normal');
-        return types;
-    }
-
-    function isPrefilledOrder(data) {
-        if (!data.auditTime) return false;
-        const auditDate = new Date(parseInt(data.auditTime) * 1000);
-        const now = new Date();
-        return auditDate.getDate() !== now.getDate() ||
-            auditDate.getMonth() !== now.getMonth() ||
-            auditDate.getFullYear() !== now.getFullYear();
-    }
-
-    function isExempted(data, config) {
-        const whiteList = config.anchorWhiteList || {};
-
-        if (data.anchorUserId && whiteList.anchorUserIdWhiteList?.includes(data.anchorUserId)) {
-            console.log(`豁免命中: 主播ID "${data.anchorUserId}"`);
+    // 检查是否需要更新（24小时）
+    if (success && nw() - GM_getValue(K.CFG_TS, 0) < 864e5) return success;
+
+    // 尝试远程更新
+    try {
+        const text = await fetchText(BASE_PROXY + '/config.json');
+        const json = JSON.parse(text);
+        if (json.globalConfig) {
+            S.cfg = json.globalConfig;
+            GM_setValue(K.CFG, JSON.stringify(json));
+            GM_setValue(K.CFG_TS, nw());
             return true;
         }
+    } catch (e) {}
 
-        if (data.nickname && whiteList.nicknameWhiteList) {
-            for (const keyword of whiteList.nicknameWhiteList) {
-                if (keyword && data.nickname.includes(keyword)) {
-                    console.log(`豁免命中: 昵称包含 "${keyword}"`);
-                    return true;
-                }
-            }
-        }
+    // 远程失败，用缓存或空配置
+    if (!S.cfg) S.cfg = { auditorWhiteList: [], anchorWhiteList: {}, penaltyKeywords: [], pushUrl: {}, validationRules: {} };
+    return success;
+}
 
-        if (data.authStatus && whiteList.authStatusWhiteList) {
-            for (const keyword of whiteList.authStatusWhiteList) {
-                if (keyword && data.authStatus.includes(keyword)) {
-                    console.log(`豁免命中: 认证包含 "${keyword}"`);
-                    return true;
-                }
-            }
+// ========== 更新检查 ==========
+async function checkUpdate() {
+    try {
+        const text = await fetchText(BASE_PROXY + '/ilabel.user.js');
+        const m = text.match(/@version\s+([\d.]+)/);
+        if (m && m[1] !== V) {
+            window.open(BASE_PROXY + '/ilabel.user.js');
+            return true;
         }
-        return false;
+    } catch (e) {
+        console.error('[iLabel] 版本检查失败:', e);
     }
+    return false;
+}
 
-    function checkPenalty(data, config) {
-        const keywords = config.penaltyKeywords || [];
-        const checkOrder = [
-            { field: 'description', label: '直播间描述' },
-            { field: 'nickname', label: '主播昵称' },
-            { field: 'poiName', label: '开播位置' }
-        ];
-
-        for (const check of checkOrder) {
-            const fieldValue = data[check.field] || '';
-            for (const keyword of keywords) {
-                if (fieldValue.includes(keyword)) {
-                    return { found: true, location: check.label, keyword };
-                }
-            }
-        }
-        return { found: false };
-    }
-
-    async function getAuditorInfo() {
+// ========== 闹钟 ==========
+function preloadAudio() {
+    const d = GM_getValue(K.AUDIO);
+    if (d && nw() - GM_getValue(K.AUDIO_TS, 0) < 864e5) {
         try {
-            const response = await fetch('https://ilabel.weixin.qq.com/api/user/info', {
+            const b = new Uint8Array([...atob(d)].map(c => c.charCodeAt(0)));
+            S.audio = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/mpeg' })));
+            S.audio.loop = true; S.audio.volume = 0.4; S.audio.load();
+            return;
+        } catch (e) {}
+    }
+    GM_xmlhttpRequest({
+        method: 'GET', url: BASE_PROXY + '/music.mp3?t=' + nw(), responseType: 'arraybuffer', timeout: 15000,
+        onload: r => {
+            if (r.status !== 200) return;
+            const blob = new Blob([r.response], { type: 'audio/mpeg' });
+            S.audio = new Audio(URL.createObjectURL(blob));
+            S.audio.loop = true; S.audio.volume = 0.4; S.audio.load();
+            const rd = new FileReader();
+            rd.onloadend = () => {
+                const b64 = rd.result.split(',')[1];
+                if (b64) { GM_setValue(K.AUDIO, b64); GM_setValue(K.AUDIO_TS, nw()); }
+            };
+            rd.readAsDataURL(blob);
+        }
+    });
+}
+
+function playAlarm() {
+    S.usr.alarm && !S.confirmed && S.audio && !S.playing && S.audio.play().then(() => S.playing = true).catch(() => {});
+}
+
+function stopAlarm() {
+    S.audio && S.playing && (S.audio.pause(), S.audio.currentTime = 0, S.playing = false);
+}
+
+// ========== 提示框 ==========
+function showPrompt(live, types) {
+    S.live = live; S.types = types; S.confirmed = false;
+    closePrompt(); createPrompt(); startPush(); startAlarmCheck();
+    document.addEventListener('keydown', onSpace);
+    S.usr.alarm && setTimeout(playAlarm, 100);
+}
+
+function closePrompt() {
+    S.prompt?.remove(); S.prompt = null;
+    S.pushTimer && (clearInterval(S.pushTimer), S.pushTimer = null);
+    S.alarmTimer && (clearInterval(S.alarmTimer), S.alarmTimer = null);
+    document.removeEventListener('keydown', onSpace);
+    stopAlarm(); S.confirmed = false;
+}
+
+function onSpace(e) {
+    e.code === 'Space' && !S.confirmed && (e.preventDefault(), e.stopPropagation(), confirm());
+}
+
+function confirm() {
+    if (S.confirmed) return;
+    S.confirmed = true;
+    S.live?.liveId && navigator.clipboard.writeText(S.live.liveId).catch(() => {});
+    S.prompt?.querySelectorAll('.prompt-tag').forEach(t => Object.assign(t.style, { opacity: '0.6', cursor: 'default', pointerEvents: 'none' }));
+    S.pushTimer && (clearInterval(S.pushTimer), S.pushTimer = null);
+    stopAlarm();
+}
+
+function createPrompt() {
+    S.prompt = document.createElement('div');
+    S.prompt.id = 'il-prompt';
+    const { x, y } = S.usr.pos, s = S.usr.size / 100;
+    Object.assign(S.prompt.style, {
+        position: 'fixed', left: x + 'px', top: y + 'px', zIndex: 2147483646,
+        transform: `scale(${s})`, transformOrigin: 'left top', cursor: 'pointer', userSelect: 'none'
+    });
+    const wrapper = document.createElement('div');
+    Object.assign(wrapper.style, { display: 'flex', gap: '0', background: 'transparent', padding: '0' });
+    wrapper.addEventListener('click', e => { wrapper._dr || confirm(); wrapper._dr = false; });
+    S.types.forEach(t => wrapper.appendChild(tagEl(t)));
+    S.prompt.appendChild(wrapper);
+    document.body.appendChild(S.prompt);
+    dragPrompt(S.prompt, wrapper);
+}
+
+function tagEl(type) {
+    const t = document.createElement('div'), c = COLORS[type] || '#fff';
+    t.className = 'prompt-tag';
+    Object.assign(t.style, {
+        padding: '6px 0', width: '56px', backgroundColor: c, color: getContrastColor(c),
+        fontSize: '12px', fontWeight: 'bold', whiteSpace: 'nowrap',
+        boxShadow: '0 2px 4px rgba(0,0,0,0.2)', borderRadius: '20px',
+        margin: '0', transition: 'all 0.2s', textAlign: 'center'
+    });
+    t.textContent = NAMES[type] || type;
+    return t;
+}
+
+function getContrastColor(hex) {
+    if (!hex?.startsWith('#')) return '#000';
+    const code = hex.length === 7 ? hex.substring(1).match(/../g) : hex.substring(1).match(/./g).map(c => c + c);
+    const [r, g, b] = code.map(c => parseInt(c, 16));
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5 ? '#000' : '#fff';
+}
+
+function dragPrompt(el, wrapper) {
+    let drg = false, mv = false, ox = 0, oy = 0;
+    el.addEventListener('mousedown', e => {
+        drg = true; mv = false;
+        const r = el.getBoundingClientRect(); ox = e.clientX - r.left; oy = e.clientY - r.top;
+        el.style.cursor = 'grabbing';
+        document.addEventListener('mousemove', mve); document.addEventListener('mouseup', up);
+        e.preventDefault();
+    });
+    const mve = e => {
+        if (!drg) return;
+        (Math.abs(e.clientX - ox - el.offsetLeft) > 3 || Math.abs(e.clientY - oy - el.offsetTop) > 3) && (mv = true);
+        el.style.left = clamp(e.clientX - ox, 0, window.innerWidth - el.offsetWidth) + 'px';
+        el.style.top = clamp(e.clientY - oy, 0, window.innerHeight - el.offsetHeight) + 'px';
+        S.usr.pos = { x: parseInt(el.style.left), y: parseInt(el.style.top) };
+    };
+    const up = () => {
+        drg = false; el.style.cursor = 'pointer';
+        document.removeEventListener('mousemove', mve); document.removeEventListener('mouseup', up);
+        mv && (wrapper._dr = true, saveUser());
+    };
+}
+
+function startAlarmCheck() {
+    S.alarmTimer && clearInterval(S.alarmTimer);
+    S.alarmTimer = setInterval(() => {
+        const has = !!document.getElementById('il-prompt');
+        has && !S.confirmed && S.usr.alarm && !S.playing && playAlarm();
+        (!has || S.confirmed) && stopAlarm();
+    }, 1000);
+}
+
+// ========== 推送 ==========
+function startPush() {
+    if (!S.cfg?.pushUrl?.reminderPushUrl || !S.usr.pushRemind) return;
+    S.lastPush = nw();
+    S.pushTimer = setInterval(() => {
+        if (S.confirmed || !S.live || nw() - S.lastPush < 20000 || !S.ok) return;
+        S.lastPush = nw();
+        const data = { msgtype: "text", text: { content: `${t24()} ${S.types.map(t => NAMES[t]).join('、')}单未确认` } };
+        const auditor = S.cfg?.auditorWhiteList?.find(a => a.name === S.live?.auditor);
+        auditor && (data.text.mentioned_mobile_list = [auditor.mobile]);
+        GM_xmlhttpRequest({ method: 'POST', url: S.cfg.pushUrl.reminderPushUrl, headers: { 'Content-Type': 'application/json' }, data: JSON.stringify(data), timeout: 5000 });
+    }, 1000);
+}
+
+// ========== 请求拦截 ==========
+function setupIntercept() {
+    const _f = window.fetch;
+    window.fetch = function(...args) {
+        const [url, opts = {}] = args;
+        if (typeof url === 'string' && url.includes('/api/answers') && opts.method === 'POST') {
+            try {
+                const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
+                const err = checkSubmit(body);
+                if (err) return toast(err, 'error'), Promise.reject(new Error(err));
+            } catch (e) { return Promise.reject(e); }
+        }
+        return _f.apply(this, args).then(r => {
+            if (typeof url === 'string' && url.includes('/api/answers') && r.ok) {
+                r.clone().json().then(d => d.status === 'ok' && onAnswerSubmit(opts.body)).catch(() => {});
+            }
+            return r;
+        });
+    };
+    const _o = XMLHttpRequest.prototype.open, _s = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m, u) { this._m = m.toUpperCase(); this._u = u; return _o.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function(b) {
+        const x = this;
+        if (x._m === 'POST' && x._u?.includes('/api/answers')) {
+            try { const p = typeof b === 'string' ? JSON.parse(b) : b; const e = checkSubmit(p); if (e) return toast(e, 'error'); } catch (e) { return; }
+        }
+        const wrap = (cb, body) => x.addEventListener('load', () => { try { x.status === 200 && cb(JSON.parse(x.responseText), body); } catch (e) {} });
+        x._u?.includes('get_live_info_batch') && wrap((d, _) => d.ret === 0 && d.liveInfoList?.length && onLiveInfo(d.liveInfoList[0]));
+        x._m === 'POST' && x._u?.includes('/api/answers') && wrap((d, body) => d.status === 'ok' && onAnswerSubmit(body), b);
+        return _s.call(this, b);
+    };
+}
+
+function checkSubmit(body) {
+    const p = typeof body === 'string' ? JSON.parse(body) : body;
+    if (S.usr.minTime > 0 && p?.use_time && p.use_time < S.usr.minTime) return `提交时间 ${p.use_time.toFixed(1)}s 小于最小限制 ${S.usr.minTime}s`;
+    if (!S.usr.validation || !p?.results) return null;
+    const errs = [], rules = S.cfg?.validationRules || {};
+    Object.values(p.results).forEach(r => {
+        if (!r || r.is_targeted || r.targeted_type) return;
+        const fi = r.finder_object?.[0]; if (!fi) return;
+        const rl = fi.reason_label || fi.ext_info?.reason_label || fi.ext_info?.punish_keyword_path?.[fi.ext_info.punish_keyword_path.length - 1];
+        const pc = fi.ext_info?.punish_content, pi = fi.ext_info?.product_id, im = fi.img_url || [], ct = fi.clip_times || [], rm = fi.remark;
+        rl && rules.requireProductIdTags?.includes(rl) && (!pi || (Array.isArray(pi) && !pi.length)) && errs.push('该标签需提供商品id');
+        pc && VIDEO_POS.includes(pc) && !ct.length && !im.length && errs.push('视频/图片证据不能为空');
+        rl && (!im.length && errs.push('图片证据不能为空'), !rm?.trim() && errs.push('违规备注不能为空'));
+    });
+    return errs.length ? [...new Set(errs)].join('<br>') : null;
+}
+
+// ========== 直播数据处理 ==========
+async function onLiveInfo(info) {
+    try {
+        const [auditor, auditInfo] = await Promise.all([getAuditor(), getAuditInfo()]);
+        S.live = {
+            liveId: info.liveId || '', anchorUserId: info.anchorUserId || '', nickname: info.nickname || '',
+            authStatus: info.authStatus || '', description: info.description || '', poiName: info.poiName || '',
+            streamStartTime: info.streamStartTime || '', auditTime: auditInfo.audit_time || 0, auditor,
+            auditRemark: auditInfo.auditRemark || ''
+        };
+        if (S.ok) {
+            S.types = checkTypes(S.live);
+            const f = S.types.filter(t => S.usr.types.includes(t));
+            (f.length || S.usr.alarm) && showPrompt(S.live, f);
+        }
+    } catch (e) {}
+}
+
+function onAnswerSubmit(body) {
+    try {
+        const p = typeof body === 'string' ? JSON.parse(body) : body;
+        if (!p?.results) return;
+        Object.values(p.results).forEach(r => {
+            if (!r) return;
+            const fi = r.finder_object?.[0];
+            let cl = '不处罚';
+            if (fi) {
+                const rl = fi.reason_label || fi.ext_info?.reason_label || fi.ext_info?.punish_keyword_path?.[fi.ext_info.punish_keyword_path.length - 1] || fi.ext_info?.punish_keyword;
+                rl && (cl = fi.remark ? `${rl}（${fi.remark}）` : rl);
+            }
+            pushAnswer({ task_id: r.task_id || '', live_id: r.live_id || '', mid_str: r.mid_str || '', conclusion: cl, operator: r.oper_name?.split('-').pop()?.trim() || r.oper_name?.trim() || '未知' });
+        });
+    } catch (e) {}
+}
+
+function pushAnswer(d) {
+    const url = S.cfg?.pushUrl?.answerPushUrl; if (!url) return;
+    GM_xmlhttpRequest({
+        method: 'POST', url, headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ msgtype: "text", text: { content: `队列：${d.mid_str}\n审核：${d.operator}（${t24()}）\ntaskID：${d.task_id}\nliveID：${d.live_id}\n审核结案：${d.conclusion}` } }),
+        timeout: 5000, onload: r => r.status === 200 && S.ok && closePrompt()
+    });
+}
+
+function checkTypes(d) {
+    const ts = []; if (!S.cfg) return ts;
+    isPre(d) && ts.push('prefilled');
+    isEx(d) && ts.push('exempted');
+    d.auditRemark?.includes('复核') && ts.push('review');
+    d.auditRemark?.includes('辛苦注意审核') && ts.push('targeted');
+    penalty(d).found && ts.push('penalty');
+    d.auditRemark?.includes('辛苦核实') && ts.push('note');
+    d.auditRemark?.includes('投诉') && ts.push('complaint');
+    return ts.length ? ts : ['normal'];
+}
+
+function isPre(d) {
+    if (!d.auditTime) return false;
+    const dt = new Date(parseInt(d.auditTime) * 1000), n = new Date();
+    return dt.getDate() !== n.getDate() || dt.getMonth() !== n.getMonth() || dt.getFullYear() !== n.getFullYear();
+}
+
+function isEx(d) {
+    const wl = S.cfg?.anchorWhiteList || {};
+    return (d.anchorUserId && wl.anchorUserIdWhiteList?.includes(d.anchorUserId)) ||
+           (d.nickname && wl.nicknameWhiteList?.some(k => k && d.nickname.includes(k))) ||
+           !!(d.authStatus && wl.authStatusWhiteList?.some(k => k && d.authStatus.includes(k)));
+}
+
+function penalty(d) {
+    const kw = S.cfg?.penaltyKeywords || [];
+    for (const f of ['description', 'nickname', 'poiName']) {
+        if (kw.some(k => (d[f] || '').includes(k))) return { found: true, location: f };
+    }
+    return { found: false };
+}
+
+async function getAuditor() {
+    try {
+        const r = await fetch('/api/user/info', { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
+        if (r.ok) { const d = await r.json(); if (d.data?.name) return d.data.name.split('-').pop().trim().replace(/[^\u4e00-\u9fa5]/g, ''); }
+    } catch (e) {}
+    return '';
+}
+
+async function getAuditInfo() {
+    try {
+        const r = await fetch('/api/mixed-task/assigned?task_id=10', { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
+        if (r.ok) {
+            const d = await r.json(), c = d.data?.hits?.[0]?.content_data?.content;
+            if (c) return { audit_time: c.audit_time || 0, auditRemark: (c.send_remark || '').replace(/\\u([\dA-F]{4})/gi, (_, g) => String.fromCharCode(parseInt(g, 16))) };
+        }
+    } catch (e) {}
+    return { audit_time: 0, auditRemark: '' };
+}
+
+// ========== 配置工具 ==========
+function toggleTool() { S.tool.show ? closeTool() : openTool(); }
+function openTool() {
+    if (S.tool.el) { S.tool.el.style.display = S.tool.overlay.style.display = 'block'; S.tool.show = true; refreshTool(); }
+    else createTool();
+}
+function closeTool() {
+    S.tool.el && (S.tool.el.style.display = S.tool.overlay.style.display = 'none');
+    S.tool.show = false;
+}
+
+function createTool() {
+    ['overlay', 'el'].forEach((k, i) => {
+        const d = document.createElement('div');
+        S.tool[k] = d;
+        const baseStyle = { position: 'fixed', zIndex: 2147483645 + i, display: 'none' };
+        if (i === 0) {
+            Object.assign(d.style, { ...baseStyle, top: '0', left: '0', right: '0', bottom: '0', background: 'rgba(0,0,0,0.4)' });
+            d.addEventListener('click', closeTool);
+        } else {
+            d.id = 'il-tool';
+            Object.assign(d.style, { ...baseStyle, background: '#fff', borderRadius: '16px', boxShadow: '0 12px 40px rgba(0,0,0,0.2)', fontFamily: 'system-ui,-apple-system,sans-serif' });
+        }
+        document.body.appendChild(d);
+    });
+    window.addEventListener('resize', () => S.tool.show && centerDialog(S.tool.el));
+    renderTool(); centerDialog(S.tool.el);
+    S.tool.el.style.display = S.tool.overlay.style.display = 'block'; S.tool.show = true;
+}
+
+function renderTool() {
+    const typesHtml = Object.entries(NAMES).map(([t, n]) => `
+        <div class="il-sw-item">
+            <label class="il-sw">
+                <input type="checkbox" class="il-tc" value="${t}" ${S.usr.types.includes(t) ? 'checked' : ''}>
+                <span class="il-sl" style="--sw-color:${COLORS[t]}"></span>
+            </label>
+            <span class="il-sw-lbl">${n}</span>
+        </div>`).join('');
+
+    S.tool.el.innerHTML = `
+        <div style="padding:24px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+                <div><h3 style="margin:0;font-size:18px;color:#1a1a2e;">iLabel 辅助工具</h3><span style="font-size:11px;color:#999;">v${V}</span></div>
+                <button class="il-close" style="width:32px;height:32px;background:#f1f5f9;border:none;border-radius:8px;font-size:18px;cursor:pointer;color:#64748b;">×</button>
+            </div>
+            <div class="il-sec"><div class="il-lbl">提示类型</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">${typesHtml}</div></div>
+            <div class="il-sec">
+                <div class="il-lbl">缩放比例 <span class="il-sz-v">${S.usr.size}</span>%</div>
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <input type="range" class="il-sz-r" min="20" max="200" step="5" value="${S.usr.size}" style="flex:1;height:4px;">
+                    <input type="number" class="il-sz-n" min="20" max="200" step="5" value="${S.usr.size}" style="width:64px;padding:6px 8px;border:1px solid #e2e8f0;border-radius:8px;font-size:13px;text-align:center;">
+                </div>
+            </div>
+            <div class="il-sec">
+                <div class="il-lbl">开关设置</div>
+                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+                    ${['alarm','push','val','mt'].map(k => `
+                        <div class="il-sw-item">
+                            ${k !== 'mt' ? `<label class="il-sw"><input type="checkbox" class="il-${k}" ${S.usr[k === 'alarm' ? 'alarm' : k === 'push' ? 'pushRemind' : 'validation'] ? 'checked' : ''}><span class="il-sl"></span></label>` : ''}
+                            ${k === 'mt' ? `<div style="display:flex;align-items:center;gap:4px;"><input type="number" class="il-mt" min="0" max="300" step="1" value="${S.usr.minTime}" style="width:48px;padding:4px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;text-align:center;"><span style="font-size:11px;color:#999;">秒</span></div>` : ''}
+                            <span class="il-sw-lbl">${k === 'alarm' ? '闹钟提醒' : k === 'push' ? '推送提醒' : k === 'val' ? '答案校验' : '提交时限'}</span>
+                        </div>`).join('')}
+                </div>
+            </div>
+            <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:16px;border-top:1px solid #f1f5f9;">
+                <button class="il-btn il-btn-ghost">恢复默认</button>
+                <button class="il-btn il-btn-primary">保存配置</button>
+            </div>
+        </div>`;
+    bindTool();
+}
+
+function refreshTool() { S.tool.el && centerDialog(S.tool.el); }
+
+function bindTool() {
+    const el = S.tool.el;
+    $('.il-close', el).addEventListener('click', closeTool);
+    const szR = $('.il-sz-r', el), szN = $('.il-sz-n', el), szV = $('.il-sz-v', el);
+    const sync = v => { szR.value = v; szN.value = v; szV.textContent = v; };
+    szR.addEventListener('input', e => sync(e.target.value));
+    szN.addEventListener('input', e => sync(e.target.value));
+    $('.il-btn-ghost', el).addEventListener('click', () => {
+        S.usr = { types: DEF_TYPES, size: 150, pos: { x: Math.round((window.innerWidth - 200) / 2), y: 100 }, alarm: true, pushRemind: true, validation: true, minTime: 30 };
+        renderTool(); refreshTool(); saveUser();
+    });
+    $('.il-btn-primary', el).addEventListener('click', () => {
+        S.usr.types = [...el.querySelectorAll('.il-tc:checked')].map(cb => cb.value);
+        S.usr.size = parseInt(szR.value || 150);
+        S.usr.alarm = $('.il-alm', el).checked;
+        S.usr.pushRemind = $('.il-push', el).checked;
+        S.usr.validation = $('.il-val', el).checked;
+        S.usr.minTime = parseInt($('.il-mt', el).value || 30);
+        saveUser(); setTimeout(closeTool, 800);
+    });
+}
+
+// ========== 队列查询 ==========
+function toggleQueue() { S.queue.show ? closeQueue() : openQueue(); }
+function openQueue() {
+    if (S.queue.el) { S.queue.el.style.display = S.queue.overlay.style.display = 'block'; S.queue.show = true; S.queue.liveId = ''; S.queue.results = []; refreshQueue(); }
+    else createQueue();
+}
+function closeQueue() {
+    S.queue.el && (S.queue.el.style.display = 'none');
+    S.queue.overlay && (S.queue.overlay.style.display = 'none');
+    S.queue.show = false; S.queue.liveId = ''; S.queue.results = [];
+    S.queue.done.clear();
+}
+
+function createQueue() {
+    ['overlay', 'el'].forEach((k, i) => {
+        const d = document.createElement('div');
+        S.queue[k] = d;
+        const baseStyle = { position: 'fixed', zIndex: 2147483645 + i, display: 'none' };
+        if (i === 0) {
+            Object.assign(d.style, { ...baseStyle, top: '0', left: '0', right: '0', bottom: '0', background: 'rgba(0,0,0,0.4)' });
+            d.addEventListener('click', closeQueue);
+        } else {
+            d.id = 'il-queue';
+            Object.assign(d.style, { ...baseStyle, background: '#fff', borderRadius: '16px', boxShadow: '0 12px 40px rgba(0,0,0,0.2)', fontFamily: 'system-ui,-apple-system,sans-serif', overflow: 'hidden' });
+        }
+        document.body.appendChild(d);
+    });
+    window.addEventListener('resize', () => S.queue.show && centerDialog(S.queue.el, 0.9, 0.85));
+    renderQueue(); centerDialog(S.queue.el, 0.9, 0.85);
+    S.queue.el.style.display = S.queue.overlay.style.display = 'block'; S.queue.show = true;
+}
+
+function renderQueue() {
+    S.queue.el.innerHTML = `
+        <div style="display:flex;flex-direction:column;max-height:inherit;">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-bottom:1px solid #f1f5f9;">
+                <h3 style="margin:0;font-size:16px;color:#1a1a2e;">队列查询</h3>
+                <button class="il-q-close" style="width:32px;height:32px;background:#f1f5f9;border:none;border-radius:8px;font-size:18px;cursor:pointer;color:#64748b;">×</button>
+            </div>
+            <div style="padding:20px 24px;overflow-y:auto;flex:1;">
+                <div style="display:flex;gap:10px;margin-bottom:20px;">
+                    <input type="text" class="il-q-in" placeholder="输入 Live ID 查询" style="flex:1;padding:10px 14px;border:1px solid #e2e8f0;border-radius:10px;font-size:14px;outline:none;">
+                    <button class="il-q-btn" style="padding:10px 24px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-size:14px;cursor:pointer;font-weight:500;">查询</button>
+                </div>
+                <div class="il-q-list" style="display:flex;flex-direction:column;gap:8px;min-height:200px;"></div>
+                <div class="il-q-load" style="display:none;text-align:center;padding:40px;color:#94a3b8;">查询中...</div>
+                <div class="il-q-no" style="display:none;text-align:center;padding:40px;color:#94a3b8;">暂无结果</div>
+            </div>
+            <div style="padding:12px 24px;border-top:1px solid #f1f5f9;font-size:12px;color:#94a3b8;display:flex;justify-content:space-between;">
+                <span>统计: ${S.queue.stats.size} 队列</span>
+                <span class="il-q-cnt">共 ${S.queue.list.length} 个队列</span>
+            </div>
+        </div>`;
+    bindQueue();
+}
+
+function refreshQueue() {
+    const el = S.queue.el; if (!el) return;
+    const list = $('.il-q-list', el), load = $('.il-q-load', el), no = $('.il-q-no', el), cnt = $('.il-q-cnt', el);
+    if (S.queue.loading) {
+        list.style.display = no.style.display = 'none'; load.style.display = 'block';
+        cnt.textContent = `查询中... ${Math.floor((nw() - S.queue.start) / 1000)}s`;
+    } else {
+        load.style.display = 'none';
+        if (S.queue.results.length) {
+            list.style.display = 'flex'; no.style.display = 'none';
+            list.innerHTML = S.queue.results.map(q => `
+                <div class="il-q-i" data-url="${esc(q.url)}">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <b style="font-size:13px;">${esc(q.title)}</b>
+                        <span style="background:#ecfdf5;color:#059669;padding:2px 10px;border-radius:20px;font-size:11px;font-weight:600;">命中 ${q.total}</span>
+                    </div>
+                    <div style="font-size:11px;color:#94a3b8;margin-top:4px;">ID: ${q.mid} · ${q.responseTime}ms</div>
+                </div>`).join('');
+            list.querySelectorAll('.il-q-i').forEach(i => i.addEventListener('click', () => window.open(i.dataset.url, '_blank')));
+            cnt.textContent = `${S.queue.results.length}/${S.queue.done.size} 已查`;
+        } else {
+            list.style.display = 'none'; no.style.display = 'block';
+            cnt.textContent = `共 ${S.queue.list.length} 个队列`;
+        }
+    }
+    S.queue.show && centerDialog(S.queue.el, 0.9, 0.85);
+}
+
+function bindQueue() {
+    const el = S.queue.el;
+    $('.il-q-close', el).addEventListener('click', closeQueue);
+    const inp = $('.il-q-in', el), btn = $('.il-q-btn', el);
+    const go = () => { const id = inp.value.trim(); id && (S.queue.liveId = id, searchQueues(id)); };
+    btn.addEventListener('click', go);
+    inp.addEventListener('keypress', e => e.key === 'Enter' && go());
+}
+
+async function searchQueues(liveId) {
+    S.queue.done.clear(); S.queue.loading = true; S.queue.results = []; S.queue.start = nw(); refreshQueue();
+    try {
+        if (!S.queue.list.length) await preloadQueues();
+        const sorted = [...S.queue.list].sort((a, b) => (S.queue.stats.get(b.id) || 0) - (S.queue.stats.get(a.id) || 0));
+        for (let i = 0; i < sorted.length; i += 5) {
+            await Promise.all(sorted.slice(i, i + 5).map(m => checkHit(m, liveId)));
+            refreshQueue();
+        }
+    } catch (e) {} finally { S.queue.loading = false; refreshQueue(); }
+}
+
+function checkHit(m, liveId) {
+    const qid = m.id; S.queue.done.add(qid);
+    return new Promise(rs => {
+        const st = nw();
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `https://ilabel.weixin.qq.com/api/labeled-hits?mid=${qid}&pagesize=3&pageindex=1&answer=${encodeURIComponent(JSON.stringify([{key:'live_id',op:'=',value:liveId}]))}&status=all`,
+            headers: { 'x-requested-with': 'XMLHttpRequest' },
+            onload: r => {
+                try {
+                    const d = JSON.parse(r.responseText), t = d?.data?.total || 0;
+                    t > 0 && (S.queue.stats.set(qid, (S.queue.stats.get(qid) || 0) + 1), addResult({ mid: qid, title: m.title, total: t, url: `https://ilabel.weixin.qq.com/mission/${qid}/modify?title=${encodeURIComponent(m.title)}&status=all&answer=${encodeURIComponent(JSON.stringify({key:'live_id',op:'=',value:liveId}))}`, responseTime: nw() - st }));
+                } catch (e) {}
+                rs();
+            },
+            onerror: () => rs()
+        });
+    });
+}
+
+function addResult(r) {
+    S.queue.results.some(x => x.mid === r.mid) || (S.queue.results.push(r), S.queue.results.sort((a, b) => a.total !== b.total ? b.total - a.total : a.responseTime - b.responseTime));
+}
+
+async function preloadQueues() {
+    try {
+        const c = GM_getValue(K.QLIST);
+        if (c && nw() - GM_getValue(K.QLIST_TS, 0) < 864e5) { S.queue.list = JSON.parse(c); return; }
+        const m = await new Promise((ok, no) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: 'https://ilabel.weixin.qq.com/api/mission/list?pageindex=1&pagesize=100&query=%7B%22mid%22:%22%22,%22keyword%22:%22%22,%22status%22:1,%22authorities%22:[]%7D&mission_type=5&business=32',
                 headers: { 'x-requested-with': 'XMLHttpRequest' },
-                credentials: 'include'
+                onload: r => { try { const d = JSON.parse(r.responseText); d?.data?.missions ? ok(d.data.missions) : no(); } catch (e) { no(); } },
+                onerror: no
             });
-            if (response.ok) {
-                const data = await response.json();
-                if (data.status === 'ok' && data.data?.name) {
-                    // 原有逻辑：处理包含"-"的情况
-                    let name = data.data.name;
-                    if (name.includes('-')) {
-                        name = name.split('-').pop().trim();
-                    } else {
-                        name = name.trim();
-                    }
+        });
+        S.queue.list = m; GM_setValue(K.QLIST, JSON.stringify(m)); GM_setValue(K.QLIST_TS, nw());
+    } catch (e) { const c = GM_getValue(K.QLIST); c && (S.queue.list = JSON.parse(c)); }
+}
 
-                    // 新增：只提取中文字符（去除所有非中文字符，包括点号、空格等）
-                    const chineseName = name.replace(/[^\u4e00-\u9fa5]/g, '');
+// ========== 数据面板 ==========
+function getUsername() {
+    const m = document.cookie.match(/ilabel-username="[^"]*?([^|=]+?)==/);
+    return (m && m[1]) ? (() => { try { return atob(m[1]); } catch (e) { return 'oUCl2wCZ1wIa38dAQOh2xFrv1uHg'; } })() : 'oUCl2wCZ1wIa38dAQOh2xFrv1uHg';
+}
 
-                    console.log('审核员名字处理:', {
-                        原始: data.data.name,
-                        原有逻辑后: name,
-                        提取中文后: chineseName
-                    });
+function getDayRange() {
+    const n = new Date();
+    return {
+        start: Math.floor(new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime() / 1000),
+        end: Math.floor(new Date(n.getFullYear(), n.getMonth(), n.getDate(), 23, 59, 59).getTime() / 1000)
+    };
+}
 
-                    return chineseName;
-                }
-            }
-        } catch (e) {
-            console.error('获取审核员信息失败', e);
-        }
-        return '';
+function getHourRange() {
+    const n = new Date(), h = n.getMinutes() < 2 ? new Date(n.getTime() - 36e5) : n;
+    const y = h.getFullYear(), mo = String(h.getMonth() + 1).padStart(2, '0'), d = String(h.getDate()).padStart(2, '0'), hr = String(h.getHours()).padStart(2, '0');
+    return { begin: `${y}-${mo}-${d} ${hr}:00:00`, end: `${y}-${mo}-${d} ${hr}:59:59` };
+}
+
+function togglePanel() { S.panel.show ? hidePanel() : showPanel(); }
+function showPanel() {
+    if (!S.panel.el) { createPanel(); S.panel.show = true; updatePanelData(); S.panel.timer = setInterval(updatePanelData, 60000); }
+    else { S.panel.el.style.display = 'block'; S.panel.show = true; S.panel.timer || (updatePanelData(), S.panel.timer = setInterval(updatePanelData, 60000)); }
+}
+function hidePanel() {
+    S.panel.el && (S.panel.el.style.display = 'none'); S.panel.show = false;
+    S.panel.timer && (clearInterval(S.panel.timer), S.panel.timer = null);
+}
+
+function createPanel() {
+    const d = document.createElement('div'); d.className = 'il-panel';
+    Object.assign(d.style, {
+        position: 'fixed', right: '20px', top: '100px', width: '220px',
+        background: 'rgba(255,255,255,0.8)', color: '#1e293b', borderRadius: '14px',
+        padding: '10px 14px', fontSize: '12px', fontFamily: 'system-ui,-apple-system,sans-serif',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.1)', zIndex: 2147483546,
+        backdropFilter: 'blur(8px)', border: '1px solid rgba(0,0,0,0.06)',
+        cursor: 'move', userSelect: 'none'
+    });
+    d.innerHTML = `
+        <div class="il-pd-row"><span class="il-pd-lbl">质检余量</span><span class="il-pd-val" id="il-pd-d">${S.panel.last.delay}</span></div>
+        <div class="il-pd-row"><span class="il-pd-lbl">小时审核</span><span class="il-pd-val" id="il-pd-l">${S.panel.last.label}</span></div>
+        <div class="il-pd-row"><span class="il-pd-lbl">小时速度</span><span class="il-pd-val" id="il-pd-s">${S.panel.last.speed}</span></div>
+        <div class="il-pd-footer"><span id="il-pd-t">${S.panel.last.time}</span><button class="il-pd-btn" id="il-pd-b">刷新</button></div>
+    `;
+    document.body.appendChild(d);
+    dragPanel(d);
+    $('#il-pd-b', d).addEventListener('click', () => !$('#il-pd-b', d).disabled && updatePanelData());
+    S.panel.el = d;
+}
+
+function dragPanel(el) {
+    let dr = false, ox = 0, oy = 0;
+    el.addEventListener('mousedown', e => {
+        if (e.target.tagName === 'BUTTON') return;
+        dr = true; const r = el.getBoundingClientRect(); ox = e.clientX - r.left; oy = e.clientY - r.top;
+        el.style.opacity = '0.9';
+        document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+        e.preventDefault();
+    });
+    const mv = e => {
+        dr && (el.style.left = clamp(e.clientX - ox, 0, window.innerWidth - el.offsetWidth) + 'px',
+               el.style.top = clamp(e.clientY - oy, 0, window.innerHeight - el.offsetHeight) + 'px',
+               el.style.right = 'auto', el.style.bottom = 'auto');
+    };
+    const up = () => { dr = false; el.style.opacity = '1'; document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); };
+}
+
+function updatePanelData() {
+    if (!S.panel.el) return;
+    const btn = $('#il-pd-b', S.panel.el); btn.disabled = true;
+    let delayDone = false, speedDone = false;
+    const checkDone = () => { delayDone && speedDone && (btn.disabled = false); };
+
+    const { start, end } = getDayRange();
+    GM_xmlhttpRequest({
+        method: 'GET',
+        url: `https://ilabel.weixin.qq.com/api/statistic/crm-all-summary?start_time=${start}&end_time=${end}&task_id=10`,
+        headers: { 'x-requested-with': 'XMLHttpRequest' },
+        onload: r => {
+            try { const d = JSON.parse(r.responseText); updateDelay((d.status === 'ok' && d.data ? d.data.find(i => i.mid === 9639) : null)?.delay_cnt ?? '--', false); }
+            catch (e) { updateDelay('--', true); }
+            delayDone = true; checkDone();
+        },
+        onerror: () => { updateDelay('--', true); delayDone = true; checkDone(); }
+    });
+
+    const hr = getHourRange();
+    GM_xmlhttpRequest({
+        method: 'GET',
+        url: `https://ilabel.weixin.qq.com/api/statistic/detail?time_interval=0&time_begin=${encodeURIComponent(hr.begin)}&time_end=${encodeURIComponent(hr.end)}&group_ids=&usernames=${getUsername()}&mission_ids=${MISSION_IDS.join(',')}&group_dims=marker&answer=[]&cal_summary=1&filter_sync_appeal=0`,
+        headers: { 'x-requested-with': 'XMLHttpRequest' },
+        onload: r => {
+            try { const d = JSON.parse(r.responseText); const s = d.status === 'ok' && d.data?.statistics?.length ? d.data.statistics[0] : null; updateSpeed(s ? s.label_cnt || 0 : 0, s ? s.use_time || 0 : 0, false); }
+            catch (e) { updateSpeed(0, 0, true); }
+            speedDone = true; checkDone();
+        },
+        onerror: () => { updateSpeed(0, 0, true); speedDone = true; checkDone(); }
+    });
+}
+
+function updateDelay(v, err) {
+    if (!S.panel.el) return;
+    S.panel.last.delay = v;
+    const el = $('#il-pd-d', S.panel.el); el && (el.textContent = v);
+    if (!err) { S.panel.last.time = t24(); const t = $('#il-pd-t', S.panel.el); t && (t.textContent = S.panel.last.time); }
+}
+
+function updateSpeed(cnt, ut, err) {
+    if (!S.panel.el) return;
+    const lv = Math.round(cnt), sv = cnt > 0 ? (ut / cnt).toFixed(2) : '--';
+    S.panel.last.label = lv + '条'; S.panel.last.speed = sv === '--' ? '--s' : sv + 's';
+    [['#il-pd-l', S.panel.last.label], ['#il-pd-s', S.panel.last.speed]].forEach(([id, val]) => {
+        const el = $(id, S.panel.el); if (!el) return;
+        el.textContent = val; el.className = 'il-pd-val';
+        sv !== '--' && el.classList.add(parseFloat(sv) > 150 ? 'il-pd-red' : parseFloat(sv) < 80 ? 'il-pd-yel' : 'il-pd-grn');
+    });
+    if (!err) { S.panel.last.time = t24(); const t = $('#il-pd-t', S.panel.el); t && (t.textContent = S.panel.last.time); }
+}
+
+// ========== 样式 ==========
+function addStyles() {
+    GM_addStyle(`
+        .prompt-tag{padding:6px 0;width:56px;font-weight:bold;white-space:nowrap;box-shadow:0 2px 4px rgba(0,0,0,0.2);border-radius:20px;margin:0;text-align:center;transition:all 0.2s;}
+        @keyframes il-fade{0%{opacity:0;transform:translate(-50%,60%)}20%{opacity:1;transform:translate(-50%,-50%)}80%{opacity:1}100%{opacity:0;transform:translate(-50%,-140%)}}
+        @keyframes il-out{from{opacity:1;transform:translate(-50%,-50%)}to{opacity:0;transform:translate(-50%,-40%)}}
+        #il-tool .il-sec{background:#f8fafc;padding:14px 16px;border-radius:12px;border:1px solid #f1f5f9;margin-bottom:16px;}
+        #il-tool .il-lbl{font-size:12px;font-weight:600;color:#64748b;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;}
+        #il-tool .il-sw{position:relative;display:inline-block;width:40px;height:22px;}
+        #il-tool .il-sw input{opacity:0;width:0;height:0;}
+        #il-tool .il-sl{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:#d1d5db;transition:.3s;border-radius:22px;}
+        #il-tool .il-sl:before{position:absolute;content:"";height:16px;width:16px;left:3px;bottom:3px;background:#fff;transition:.3s;border-radius:50%;}
+        #il-tool .il-sw input:checked+.il-sl{background:var(--sw-color, #2563eb);}
+        #il-tool .il-sw input:checked+.il-sl:before{transform:translateX(18px);}
+        #il-tool .il-sw-item{display:flex;flex-direction:column;align-items:center;gap:6px;}
+        #il-tool .il-sw-lbl{font-size:11px;color:#64748b;font-weight:500;}
+        #il-tool .il-btn{padding:8px 20px;border:none;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;transition:all 0.2s;}
+        #il-tool .il-btn-ghost{background:#f1f5f9;color:#475569;}
+        #il-tool .il-btn-ghost:hover{background:#e2e8f0;}
+        #il-tool .il-btn-primary{background:#2563eb;color:#fff;}
+        #il-tool .il-btn-primary:hover{background:#1d4ed8;}
+        #il-queue .il-q-i{padding:12px 16px;background:#f8fafc;border-radius:10px;cursor:pointer;border:1px solid #f1f5f9;transition:all 0.15s;}
+        #il-queue .il-q-i:hover{background:#eff6ff;border-color:#2563eb;}
+        .il-pd-row{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;margin-bottom:4px;background:rgba(0,0,0,0.03);border-radius:8px;}
+        .il-pd-lbl{font-size:11px;color:#64748b;font-weight:500;}
+        .il-pd-val{font-weight:600;font-size:12px;}
+        .il-pd-red{color:#dc2626;}
+        .il-pd-yel{color:#d97706;}
+        .il-pd-grn{color:#059669;}
+        .il-pd-footer{display:flex;justify-content:space-between;align-items:center;margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.06);font-size:10px;color:#94a3b8;}
+        .il-pd-btn{background:rgba(0,0,0,0.05);border:1px solid rgba(0,0,0,0.1);color:#475569;padding:3px 10px;border-radius:8px;cursor:pointer;font-size:11px;transition:all 0.2s;}
+        .il-pd-btn:hover{background:rgba(0,0,0,0.1);}
+        .il-pd-btn:disabled{opacity:0.4;cursor:not-allowed;}
+    `);
+}
+
+// ========== 初始化 ==========
+(async function init() {
+    log(`辅助工具 v${V} 初始化`);
+    try {
+        loadUser();
+        if (!S.usr.pos) S.usr.pos = { x: Math.round((window.innerWidth - 200) / 2), y: 100 };
+
+        // 并行加载
+        const [auditorName, cfgLoaded] = await Promise.all([getAuditor(), loadCfg()]);
+        S.auditor = auditorName;
+        S.ok = S.cfg?.auditorWhiteList?.some(a => a.name === S.auditor);
+
+        // 精简日志：审核员✅/❌，配置✅/❌，版本✅/❌
+        log(`审核员: ${S.auditor || '未知'} 白名单`, S.ok);
+        log(`配置加载`, cfgLoaded);
+
+        // 更新检查（异步，不阻塞）
+        checkUpdate().then(updated => log(`版本更新`, !updated)).catch(() => log(`版本检查`, false));
+
+        S.ok && (preloadAudio(), await preloadQueues());
+        addStyles();
+        GM_registerMenuCommand('配置工具', toggleTool);
+        GM_registerMenuCommand('数据面板', togglePanel);
+        GM_registerMenuCommand('队列查询', toggleQueue);
+        setupIntercept();
+    } catch (e) {
+        console.error('[iLabel] 初始化失败', e);
     }
+})();
 
-    async function getAuditInfo() {
-        try {
-            const response = await fetch('https://ilabel.weixin.qq.com/api/mixed-task/assigned?task_id=10', {
-                headers: { 'x-requested-with': 'XMLHttpRequest' },
-                credentials: 'include'
-            });
-            if (!response.ok) return { audit_time: 0, auditRemark: '' };
-
-            const data = await response.json();
-            if (data.status === 'ok' && data.data?.hits?.length > 0) {
-                const hit = data.data.hits[0];
-                const content = hit.content_data?.content;
-                if (content) {
-                    return {
-                        audit_time: content.audit_time || 0,
-                        auditRemark: decodeUnicode(content.send_remark || '')
-                    };
-                }
-            }
-        } catch (e) { }
-        return { audit_time: 0, auditRemark: '' };
-    }
-
-    function decodeUnicode(str) {
-        if (!str) return '';
-        try {
-            return str.replace(/\\u([\dA-F]{4})/gi, (m, g) => String.fromCharCode(parseInt(g, 16)));
-        } catch (e) {
-            return str;
-        }
-    }
-
-    function getContrastColor(hexcolor) {
-        if (!hexcolor.startsWith('#')) return '#ffffff';
-        const hex = hexcolor.substring(1);
-        const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.substring(0, 2), 16);
-        const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.substring(2, 4), 16);
-        const b = parseInt(hex.length === 3 ? hex[2] + hex[2] : hex.substring(4, 6), 16);
-        return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.5 ? '#000000' : '#ffffff';
-    }
-
-    function formatTime24() {
-        const now = new Date();
-        return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
-    }
-
-    function addStyles() {
-        GM_addStyle(`
-            #ilabel-prompt-container {
-                position: fixed;
-                z-index: 1000000;
-                cursor: move;
-                user-select: none;
-            }
-            #ilabel-prompt-container > div {
-                display: flex;
-                gap: 0;
-                background: transparent;
-                padding: 0;
-            }
-            #ilabel-prompt-container > div.vertical {
-                flex-direction: column;
-            }
-            .prompt-tag, .prompt-confirm-btn {
-                padding: 6px 16px;
-                font-size: 12px;
-                font-weight: bold;
-                white-space: nowrap;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-                border-radius: 20px;
-                margin: 0;
-                text-align: center;
-                transition: all 0.2s;
-            }
-            .prompt-confirm-btn {
-                cursor: pointer;
-            }
-            .prompt-confirm-btn:hover {
-                background-color: #d32f2f !important;
-            }
-
-            @keyframes fadeInOut {
-                0% { opacity: 0; transform: translate(-50%, 60%); }
-                20% { opacity: 1; transform: translate(-50%, -50%); }
-                80% { opacity: 1; transform: translate(-50%, -50%); }
-                100% { opacity: 0; transform: translate(-50%, -140%); }
-            }
-
-            @keyframes fadeOut {
-                from { opacity: 1; transform: translate(-50%, -50%); }
-                to { opacity: 0; transform: translate(-50%, -40%); }
-            }
-
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-
-            /* 配置工具样式 */
-            #ilabel-config-tool * {
-                box-sizing: border-box;
-            }
-            #ilabel-config-tool .config-tool-container {
-                padding: 20px;
-            }
-            #ilabel-config-tool .config-tool-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 15px;
-                padding-bottom: 10px;
-                border-bottom: 2px solid #f0f0f0;
-            }
-            #ilabel-config-tool .config-tool-header h3 {
-                margin: 0;
-                color: #333;
-                font-size: 16px;
-                font-weight: 600;
-            }
-            #ilabel-config-tool .close-btn {
-                background: none;
-                border: none;
-                font-size: 24px;
-                cursor: pointer;
-                color: #999;
-                line-height: 1;
-                padding: 0 5px;
-            }
-            #ilabel-config-tool .close-btn:hover {
-                color: #333;
-            }
-            #ilabel-config-tool .section-label {
-                display: block;
-                margin-bottom: 8px;
-                font-weight: 600;
-                color: #444;
-                font-size: 13px;
-            }
-            #ilabel-config-tool .checkbox-item {
-                display: flex;
-                align-items: center;
-                gap: 5px;
-                cursor: pointer;
-                font-size: 12px;
-            }
-            #ilabel-config-tool .checkbox-item input[type="checkbox"] {
-                margin: 0;
-            }
-            #ilabel-config-tool .radio-group label {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-                cursor: pointer;
-                font-size: 12px;
-            }
-            #ilabel-config-tool .switch {
-                position: relative;
-                display: inline-block;
-                width: 44px;
-                height: 22px;
-            }
-            #ilabel-config-tool .switch input {
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }
-            #ilabel-config-tool .slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-color: #ccc;
-                transition: .3s;
-                border-radius: 22px;
-            }
-            #ilabel-config-tool .slider:before {
-                position: absolute;
-                content: "";
-                height: 18px;
-                width: 18px;
-                left: 2px;
-                bottom: 2px;
-                background-color: white;
-                transition: .3s;
-                border-radius: 50%;
-            }
-            #ilabel-config-tool input:checked + .slider {
-                background-color: #4caf50;
-            }
-            #ilabel-config-tool input:checked + .slider:before {
-                transform: translateX(22px);
-            }
-            #ilabel-config-tool .test-btn {
-                padding: 4px 12px;
-                background: #2196f3;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 12px;
-            }
-            #ilabel-config-tool .test-btn:disabled {
-                background: #ccc;
-                cursor: not-allowed;
-            }
-            #ilabel-config-tool .preview-wrapper {
-                display: flex;
-                gap: 0;
-                transform-origin: center;
-            }
-            #ilabel-config-tool .preview-wrapper.vertical {
-                flex-direction: column;
-            }
-            #ilabel-config-tool .preview-wrapper.vertical .preview-item {
-                width: auto !important;
-                min-width: 56px;
-                text-align: center;
-                padding: 6px 16px;
-            }
-            #ilabel-config-tool .preview-wrapper:not(.vertical) .preview-item {
-                width: 56px;
-                text-align: center;
-                padding: 6px 0;
-            }
-            #ilabel-config-tool .preview-item {
-                padding: 4px 12px;
-                font-size: 12px;
-                font-weight: 500;
-                white-space: nowrap;
-                border-radius: 20px;
-                color: white;
-            }
-            #ilabel-config-tool .preview-item.confirm-btn {
-                background-color: #f44336 !important;
-                color: white !important;
-                border: none !important;
-            }
-            #ilabel-config-tool .reset-btn {
-                background: #ff9800;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 16px;
-                cursor: pointer;
-                font-size: 12px;
-            }
-            #ilabel-config-tool .save-btn {
-                background: #4caf50;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 16px;
-                cursor: pointer;
-                font-size: 12px;
-            }
-
-            /* 队列查询弹窗样式 */
-            #ilabel-queue-modal * {
-                box-sizing: border-box;
-            }
-            #ilabel-queue-modal .queue-item {
-                transition: all 0.2s;
-            }
-            #ilabel-queue-modal .queue-item:hover {
-                background-color: #e8e8e8;
-                border-color: #2196f3;
-            }
-
-            /* 警告横幅样式 */
-            .warning-banner {
-                animation: slideDown 0.3s ease;
-            }
-            @keyframes slideDown {
-                from {
-                    opacity: 0;
-                    transform: translateY(-20px);
-                }
-                to {
-                    opacity: 1;
-                    transform: translateY(0);
-                }
-            }
-        `);
-    }
-
-    // 启动
-    init();
 })();
