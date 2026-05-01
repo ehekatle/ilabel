@@ -872,7 +872,7 @@ function addStyles() {
         S.ok = S.cfg?.auditorWhiteList?.some(a => a.name === S.auditor);
 
         // 精简日志：审核员✅/❌，配置✅/❌，版本✅/❌
-        log(`审核员: ${S.auditor || '未知'} 白名单`, S.ok);
+        log(`审核员: ${S.auditor || '未知'} `, S.ok);
         log(`配置加载`, cfgLoaded);
 
         // 更新检查（异步，不阻塞）
