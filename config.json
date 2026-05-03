@@ -3,14 +3,8 @@
     "updateUrl": "https://www.tampermonkey.net/script_installation.php#url=https://hk.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilabel.user.js",
     "globalConfig": {
         "auditorWhiteList": [
-            {
-                "name": "王鹏程",
-                "mobile": "18423065975"
-            },
-            {
-                "name": "刘丹娜",
-                "mobile": "18323846400"
-            },
+            {"name": "王鹏程","mobile": "18423065975"},
+            {"name": "刘丹娜","mobile": "18323846400"},
             {
                 "name": "李晓露",
                 "mobile": "15922633098"
