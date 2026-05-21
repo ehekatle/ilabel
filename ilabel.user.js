@@ -28,6 +28,8 @@
 (function() {
     'use strict';
 
+    const ADVANCED_MODE = 0;
+
     const V = GM_info.script.version;
     const BASE_RAW = 'https://raw.githubusercontent.com/ehekatle/ilabel/main';
     const BASE_PROXY = 'https://cdn.gh-proxy.org/' + BASE_RAW;
@@ -58,8 +60,8 @@
         audio: null, playing: false, alarmTimer: null,
         tool: { el: null, overlay: null, show: false, dirty: false },
         queue: { el: null, overlay: null, show: false, liveId: '', results: [], loading: false, list: [], stats: new Map, done: new Set, start: 0 },
-        panel: { el: null, show: false, timer: null, last: { delay: '--', label: '--', speed: '--', time: '--:--:--' } },
-        auditor: '', ok: false, username: ''
+        panel: { el: null, show: false, timer: null, last: { delay: '--', label: '--', speed: '--', time: '--:--:--', ratio: '--' } },
+        auditor: '', ok: false, username: '', missionTitle: ''
     };
 
     // ========== 工具函数 ==========
@@ -68,7 +70,6 @@
     const t24 = () => new Date().toTimeString().slice(0, 8);
     const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
     const esc = s => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
-    const log = (msg, success) => console.log(`[iLabel] ${msg} ${success === true ? '✅' : success === false ? '❌' : success || ''}`);
 
     const toast = (msg, isError) => {
         const t = document.createElement('div');
@@ -312,13 +313,23 @@
     };
 
     // ========== 请求拦截 ==========
-    const checkSubmit = body => {
-        const p = typeof body === 'string' ? JSON.parse(body) : body;
-        if (S.usr.minTime > 0 && p?.use_time && p.use_time < S.usr.minTime)
-            return `提交时间 ${p.use_time.toFixed(1)}s 小于最小限制 ${S.usr.minTime}s`;
-        if (!S.usr.validation || !p?.results) return null;
+    /**
+     * 修改提交的 use_time（高级模式）
+     * @param {number} useTime - 原始用时
+     * @param {number} minTime - 最小时限
+     * @returns {number} 修改后的用时
+     */
+    const adjustUseTime = (useTime, minTime) => {
+        if (!ADVANCED_MODE || useTime >= minTime) return useTime;
+        const remainder = useTime % 10;
+        const newTime = minTime + remainder;
+        return parseFloat(newTime.toFixed(1));
+    };
+
+    /** 验证提交数据 */
+    const validateSubmission = body => {
         const errs = [], rules = S.cfg?.validationRules || {};
-        Object.values(p.results).forEach(r => {
+        Object.values(body.results || {}).forEach(r => {
             if (!r || r.is_targeted || r.targeted_type) return;
             const fi = r.finder_object?.[0]; if (!fi) return;
             const rl = fi.reason_label || fi.ext_info?.reason_label || fi.ext_info?.punish_keyword_path?.[fi.ext_info.punish_keyword_path.length - 1];
@@ -330,16 +341,42 @@
         return errs.length ? [...new Set(errs)].join('<br>') : null;
     };
 
+    /** 处理提交前的检查与修改 */
+    const processSubmit = body => {
+        const originalBody = typeof body === 'string' ? JSON.parse(body) : body;
+
+        // 验证（优先验证，不通过直接拒绝）
+        if (S.usr.validation) {
+            const valErr = validateSubmission(originalBody);
+            if (valErr) return { error: valErr };
+        }
+
+        // 处理提交时限
+        if (S.usr.minTime > 0 && originalBody?.use_time != null) {
+            if (ADVANCED_MODE && originalBody.use_time < S.usr.minTime) {
+                originalBody.use_time = adjustUseTime(originalBody.use_time, S.usr.minTime);
+                if (typeof body === 'string') body = JSON.stringify(originalBody);
+            } else if (!ADVANCED_MODE && originalBody.use_time < S.usr.minTime) {
+                return { error: `提交时间 ${originalBody.use_time.toFixed(1)}s 小于最小限制 ${S.usr.minTime}s` };
+            }
+        }
+
+        return { body: typeof body === 'string' ? body : originalBody, modified: originalBody.use_time !== (typeof body === 'string' ? JSON.parse(body).use_time : body.use_time) };
+    };
+
     const setupIntercept = () => {
         const _f = window.fetch;
         window.fetch = function(...args) {
             const [url, opts = {}] = args;
             if (typeof url === 'string' && url.includes('/api/answers') && opts.method === 'POST') {
-                try {
-                    const body = typeof opts.body === 'string' ? JSON.parse(opts.body) : opts.body;
-                    const err = checkSubmit(body);
-                    if (err) { toast(err, true); return Promise.reject(new Error(err)); }
-                } catch (e) { return Promise.reject(e); }
+                const result = processSubmit(opts.body);
+                if (result.error) {
+                    toast(result.error, true);
+                    return Promise.reject(new Error(result.error));
+                }
+                if (result.body !== opts.body) {
+                    opts.body = typeof opts.body === 'string' ? result.body : JSON.stringify(result.body);
+                }
             }
             return _f.apply(this, args).then(r => {
                 if (typeof url === 'string' && url.includes('/api/answers') && r.ok)
@@ -347,15 +384,34 @@
                 return r;
             });
         };
+
         const _o = XMLHttpRequest.prototype.open, _s = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function(m, u) { this._m = m.toUpperCase(); this._u = u; return _o.apply(this, arguments); };
+        XMLHttpRequest.prototype.open = function(m, u) {
+            this._m = m.toUpperCase();
+            this._u = u;
+            return _o.apply(this, arguments);
+        };
+
         XMLHttpRequest.prototype.send = function(b) {
             const x = this;
             if (x._m === 'POST' && x._u?.includes('/api/answers')) {
-                try { const p = typeof b === 'string' ? JSON.parse(b) : b; const e = checkSubmit(p); if (e) { toast(e, true); x.dispatchEvent(new Event('error')); return; } } catch (e) { return; }
+                const result = processSubmit(b);
+                if (result.error) {
+                    toast(result.error, true);
+                    x.dispatchEvent(new Event('error'));
+                    return;
+                }
+                if (result.body !== b) {
+                    b = typeof b === 'string' ? result.body : JSON.stringify(result.body);
+                }
             }
-            const wrap = (cb, body) => x.addEventListener('load', () => { try { x.status === 200 && cb(JSON.parse(x.responseText), body); } catch (e) {} });
+            const wrap = (cb, body) => x.addEventListener('load', () => {
+                try { x.status === 200 && cb(JSON.parse(x.responseText), body); } catch (e) {}
+            });
             x._u?.includes('get_live_info_batch') && wrap((d, _) => d.ret === 0 && d.liveInfoList?.length && onLiveInfo(d.liveInfoList[0]));
+            x._u?.includes('/api/mixed-task/assigned') && wrap((d, _) => {
+                if (d.status === 'ok' && d.data?.mission_info?.title) S.missionTitle = d.data.mission_info.title;
+            });
             x._m === 'POST' && x._u?.includes('/api/answers') && wrap((d, body) => d.status === 'ok' && onAnswerSubmit(body), b);
             return _s.call(this, b);
         };
@@ -364,7 +420,8 @@
     // ========== 直播数据处理 ==========
     const checkTypes = d => {
         const ts = []; if (!S.cfg) return ts;
-        isPre(d) && ts.push('prefilled'); isEx(d) && ts.push('exempted');
+        isPre(d) && ts.push('prefilled');
+        isEx(d) && ts.push('exempted');
         d.auditRemark?.includes('复核') && ts.push('review');
         d.auditRemark?.includes('辛苦注意审核') && ts.push('targeted');
         penalty(d).found && ts.push('penalty');
@@ -374,6 +431,8 @@
     };
 
     const isPre = d => {
+        if (d.auditRemark?.includes('预埋')) return true;
+        if (S.missionTitle?.includes('预埋')) return true;
         if (!d.auditTime) return false;
         const dt = new Date(parseInt(d.auditTime) * 1000), n = new Date();
         return dt.getDate() !== n.getDate() || dt.getMonth() !== n.getMonth() || dt.getFullYear() !== n.getFullYear();
@@ -405,7 +464,9 @@
         try {
             const r = await fetch('/api/mixed-task/assigned?task_id=10', { headers: { 'x-requested-with': 'XMLHttpRequest' }, credentials: 'include' });
             if (r.ok) {
-                const d = await r.json(), c = d.data?.hits?.[0]?.content_data?.content;
+                const d = await r.json();
+                if (d.data?.mission_info?.title) S.missionTitle = d.data.mission_info.title;
+                const c = d.data?.hits?.[0]?.content_data?.content;
                 if (c) return { audit_time: c.audit_time || 0, auditRemark: (c.send_remark || '').replace(/\\u([\dA-F]{4})/gi, (_, g) => String.fromCharCode(parseInt(g, 16))) };
             }
         } catch (e) {}
@@ -495,7 +556,7 @@
         S.tool.el.innerHTML = `
             <div style="padding:24px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-                    <div><h3 style="margin:0;font-size:18px;color:#1a1a2e;">iLabel 辅助工具</h3><span style="font-size:11px;color:#999;">v${V}</span></div>
+                    <div><h3 style="margin:0;font-size:18px;color:#1a1a2e;">iLabel 辅助工具</h3><span style="font-size:11px;color:#999;">v${V}${ADVANCED_MODE ? ' [高级]' : ''}</span></div>
                     <button class="il-close-btn" style="width:32px;height:32px;background:#f1f5f9;border:none;border-radius:8px;font-size:18px;cursor:pointer;color:#64748b;">×</button>
                 </div>
                 <div class="il-sec"><div class="il-lbl">提示类型</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">${typesHtml}</div></div>
@@ -512,7 +573,7 @@
                         <div class="il-sw-item"><label class="il-sw"><input type="checkbox" class="il-alm" ${S.usr.alarm ? 'checked' : ''}><span class="il-sl"></span></label><span class="il-sw-lbl">闹钟提醒</span></div>
                         <div class="il-sw-item"><label class="il-sw"><input type="checkbox" class="il-push" ${S.usr.pushRemind ? 'checked' : ''}><span class="il-sl"></span></label><span class="il-sw-lbl">推送提醒</span></div>
                         <div class="il-sw-item"><label class="il-sw"><input type="checkbox" class="il-val" ${S.usr.validation ? 'checked' : ''}><span class="il-sl"></span></label><span class="il-sw-lbl">答案校验</span></div>
-                        <div class="il-sw-item"><div style="display:flex;align-items:center;gap:4px;"><input type="number" class="il-mt" min="0" max="300" step="1" value="${S.usr.minTime}" style="width:48px;padding:4px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;text-align:center;"><span style="font-size:11px;color:#999;">秒</span></div><span class="il-sw-lbl">提交时限</span></div>
+                        <div class="il-sw-item"><div style="display:flex;align-items:center;gap:4px;"><input type="number" class="il-mt" min="0" max="300" step="1" value="${S.usr.minTime}" style="width:48px;padding:4px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;text-align:center;"><span style="font-size:11px;color:#999;">秒</span></div><span class="il-sw-lbl">提交时限${ADVANCED_MODE ? '（自动调整）' : ''}</span></div>
                     </div>
                 </div>
                 <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:16px;border-top:1px solid #f1f5f9;">
@@ -547,6 +608,7 @@
         $('#il-reset-btn', el).addEventListener('click', () => {
             S.usr = { types: DEF_TYPES, size: 150, pos: { x: Math.round((window.innerWidth - 200) / 2), y: 100 }, alarm: true, pushRemind: true, validation: true, minTime: 30 };
             renderTool(); refreshTool(); saveUser(); S.tool.dirty = false; updateSaveButton();
+            toast('已恢复默认设置');
         });
 
         $('#il-save-btn', el).addEventListener('click', () => {
@@ -639,7 +701,7 @@
                         <div style="font-size:11px;color:#94a3b8;margin-top:4px;">ID: ${q.mid} · ${q.responseTime}ms</div>
                     </div>`).join('');
                 list.querySelectorAll('.il-q-i').forEach(i => i.addEventListener('click', () => window.open(i.dataset.url, '_blank')));
-                cnt.textContent = `${S.queue.results.length}/${S.queue.done.size} 已查`;
+                cnt.textContent = `${S.queue.results.length}/${S.queue.done.size}`;
             } else {
                 list.style.display = 'none'; no.style.display = 'block';
                 cnt.textContent = `共 ${S.queue.list.length} 个队列`;
@@ -725,6 +787,12 @@
         return { begin: `${y}-${mo}-${d} ${hr}:00:00`, end: `${y}-${mo}-${d} ${hr}:59:59` };
     };
 
+    const getCurrentHourElapsed = () => {
+        const now = new Date();
+        if (now.getMinutes() < 2) return 3600;
+        return now.getMinutes() * 60 + now.getSeconds();
+    };
+
     const togglePanel = () => S.panel.show ? hidePanel() : showPanel();
     const showPanel = () => {
         if (!S.panel.el) { createPanel(); S.panel.show = true; updatePanelData(); S.panel.timer = setInterval(updatePanelData, 60000); }
@@ -735,20 +803,24 @@
         S.panel.timer && (clearInterval(S.panel.timer), S.panel.timer = null);
     };
 
+    const getPanelWidth = () => ADVANCED_MODE ? '240px' : '220px';
+
     const createPanel = () => {
         const d = document.createElement('div'); d.className = 'il-panel';
         Object.assign(d.style, {
-            position: 'fixed', right: '20px', top: '100px', width: '220px',
+            position: 'fixed', right: '20px', top: '100px', width: getPanelWidth(),
             background: 'rgba(255,255,255,0.8)', color: '#1e293b', borderRadius: '14px',
             padding: '10px 14px', fontSize: '12px', fontFamily: 'system-ui,-apple-system,sans-serif',
             boxShadow: '0 8px 32px rgba(0,0,0,0.1)', zIndex: 2147483546,
             backdropFilter: 'blur(8px)', border: '1px solid rgba(0,0,0,0.06)',
             cursor: 'move', userSelect: 'none'
         });
+        const ratioRow = ADVANCED_MODE ? `<div class="il-pd-row"><span class="il-pd-lbl">审核时长比例</span><span class="il-pd-val" id="il-pd-r">${S.panel.last.ratio}</span></div>` : '';
         d.innerHTML = `
             <div class="il-pd-row"><span class="il-pd-lbl">质检余量</span><span class="il-pd-val" id="il-pd-d">${S.panel.last.delay}</span></div>
             <div class="il-pd-row"><span class="il-pd-lbl">小时审核</span><span class="il-pd-val" id="il-pd-l">${S.panel.last.label}</span></div>
             <div class="il-pd-row"><span class="il-pd-lbl">小时速度</span><span class="il-pd-val" id="il-pd-s">${S.panel.last.speed}</span></div>
+            ${ratioRow}
             <div class="il-pd-footer"><span id="il-pd-t">${S.panel.last.time}</span><button class="il-pd-btn" id="il-pd-b">刷新</button></div>
         `;
         document.body.appendChild(d);
@@ -801,7 +873,11 @@
             url: `https://ilabel.weixin.qq.com/api/statistic/detail?time_interval=0&time_begin=${encodeURIComponent(hr.begin)}&time_end=${encodeURIComponent(hr.end)}&group_ids=&usernames=${username}&mission_ids=${MISSION_IDS.join(',')}&group_dims=marker&answer=[]&cal_summary=1&filter_sync_appeal=0`,
             headers: { 'x-requested-with': 'XMLHttpRequest' },
             onload: r => {
-                try { const d = JSON.parse(r.responseText); const s = d.status === 'ok' && d.data?.statistics?.length ? d.data.statistics[0] : null; updateSpeed(s ? s.label_cnt || 0 : 0, s ? s.use_time || 0 : 0, false); }
+                try {
+                    const d = JSON.parse(r.responseText);
+                    const s = d.status === 'ok' && d.data?.statistics?.length ? d.data.statistics[0] : null;
+                    updateSpeed(s ? s.label_cnt || 0 : 0, s ? s.use_time || 0 : 0, false);
+                }
                 catch (e) { updateSpeed(0, 0, true); }
                 speedDone = true; checkDone();
             },
@@ -825,7 +901,31 @@
             el.textContent = val; el.className = 'il-pd-val';
             sv !== '--' && el.classList.add(parseFloat(sv) > 150 ? 'il-pd-red' : parseFloat(sv) < 80 ? 'il-pd-yel' : 'il-pd-grn');
         });
+
+        if (ADVANCED_MODE) {
+            updateRatio(ut);
+        }
+
         if (!err) { S.panel.last.time = t24(); const t = $('#il-pd-t', S.panel.el); t && (t.textContent = S.panel.last.time); }
+    };
+
+    const updateRatio = (useTime) => {
+        const elapsed = getCurrentHourElapsed();
+        if (elapsed === 0) {
+            S.panel.last.ratio = '--';
+        } else {
+            const ratio = useTime / elapsed * 100;
+            S.panel.last.ratio = ratio.toFixed(1) + '%';
+        }
+
+        const el = $('#il-pd-r', S.panel.el);
+        if (!el) return;
+        el.textContent = S.panel.last.ratio;
+        el.className = 'il-pd-val';
+        if (S.panel.last.ratio !== '--') {
+            const numVal = parseFloat(S.panel.last.ratio);
+            el.classList.add(numVal < 110 ? 'il-pd-grn' : 'il-pd-red');
+        }
     };
 
     // ========== 样式 ==========
@@ -865,7 +965,6 @@
 
     // ========== 初始化 ==========
     (async function init() {
-        log(`辅助工具 v${V} 初始化`);
         try {
             loadUser();
             if (!S.usr.pos) S.usr.pos = { x: Math.round((window.innerWidth - 200) / 2), y: 100 };
@@ -875,11 +974,7 @@
             S.username = username;
             S.ok = S.cfg?.auditorWhiteList?.some(a => a.name === S.auditor);
 
-            log(`审核员: ${S.auditor || '未知'} `, S.ok);
-            log(`用户名: ${username}`, !!username);
-            log(`配置加载`, cfgLoaded);
-
-            checkUpdate().then(updated => log(`版本更新`, !updated)).catch(() => log(`版本检查`, false));
+            checkUpdate().then(updated => {}).catch(() => {});
 
             if (S.ok) { preloadAudio(); await preloadQueues(); }
             addStyles();
