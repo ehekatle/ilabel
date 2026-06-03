@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         百灵数据看板
-// @namespace    https://ocean.cdposs.qq.com
+// @namespace    https://github.com/ehekatle/ilabel
 // @version      1.0
 // @description  按月份和队列查看工作数据，自动换算标准条
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
-// @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.js
-// @updateURL    https://www.tampermonkey.net/script_installation.php#url=https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.js
-// @downloadURL  https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/ilarkData.js
+// @source       https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.user.js
+// @updateURL    https://www.tampermonkey.net/script_installation.php#url=https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.user.js
+// @downloadURL  https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.user.js
 // @match        https://ocean.cdposs.qq.com/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_xmlhttpRequest
