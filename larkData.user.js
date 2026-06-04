@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         百灵数据看板
+// @name         百灵数据查询
 // @namespace    https://github.com/ehekatle/ilabel
 // @version      1.0
 // @description  按月份和队列查看工作数据，自动换算标准条
@@ -9,335 +9,483 @@
 // @updateURL    https://www.tampermonkey.net/script_installation.php#url=https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.user.js
 // @downloadURL  https://cdn.gh-proxy.org/https://raw.githubusercontent.com/ehekatle/ilabel/main/larkData.user.js
 // @match        https://ocean.cdposs.qq.com/*
+// @require      https://cdn.bootcdn.net/ajax/libs/dayjs/1.11.10/dayjs.min.js
 // @grant        GM_registerMenuCommand
+// @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @connect      ocean.cdposs.qq.com
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // ---------- 样式 ----------
-    const style = document.createElement('style');
-    style.textContent = `
-        #workload-panel-overlay {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.4); z-index: 9999;
-            display: flex; align-items: center; justify-content: center;
+    // 添加样式
+    GM_addStyle(`
+        .ilabel-modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
-        #workload-panel {
-            background: #fff; border-radius: 10px; width: 90%; max-width: 1100px;
-            max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 8px 30px rgba(0,0,0,0.2);
+        .ilabel-modal {
+            background: #fff;
+            border-radius: 8px;
+            width: 95vw;
+            max-width: 1400px;
+            max-height: 90vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
-        .panel-header {
-            padding: 16px 20px; border-bottom: 1px solid #eee;
-            display: flex; justify-content: space-between; align-items: center;
+        .ilabel-modal-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid #e8e8e8;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
         }
-        .panel-header h2 { margin: 0; font-size: 18px; }
-        .panel-close { background: none; border: none; font-size: 22px; cursor: pointer; }
-        .panel-body { padding: 20px; overflow-y: auto; flex: 1; }
-        .filter-row {
-            display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
-            margin-bottom: 20px;
+        .ilabel-modal-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
         }
-        .filter-row select, .filter-row input, .filter-row button {
-            padding: 8px 12px; border-radius: 6px; border: 1px solid #ccc;
+        .ilabel-modal-close {
+            cursor: pointer;
+            font-size: 20px;
+            color: #999;
+            border: none;
+            background: none;
+            padding: 0;
+            line-height: 1;
+        }
+        .ilabel-modal-close:hover {
+            color: #333;
+        }
+        .ilabel-modal-body {
+            padding: 16px 20px;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .ilabel-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+        .ilabel-month-select {
+            padding: 4px 8px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            font-size: 13px;
+            height: 28px;
+            outline: none;
+        }
+        .ilabel-month-select:focus {
+            border-color: #1890ff;
+        }
+        .ilabel-filter-btns {
+            display: flex;
+            gap: 6px;
+        }
+        .ilabel-filter-btn {
+            padding: 4px 12px;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            background: #f5f5f5;
+            color: #666;
+            transition: all 0.2s;
+            height: 28px;
+        }
+        .ilabel-filter-btn.active {
+            background: #52c41a;
+            color: #fff;
+            border-color: #52c41a;
+        }
+        .ilabel-legend {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-left: auto;
+            font-size: 12px;
+            color: #666;
+        }
+        .ilabel-legend-dot {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 4px;
+        }
+        .ilabel-legend-dot.blue {
+            background: #1890ff;
+        }
+        .ilabel-legend-dot.green {
+            background: #52c41a;
+        }
+        .ilabel-summary {
+            display: flex;
+            gap: 20px;
+            padding: 8px 12px;
+            background: #fafafa;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+        .ilabel-summary-item {
+            white-space: nowrap;
+        }
+        .ilabel-summary-item .actual {
+            color: #1890ff;
+            font-weight: 500;
+        }
+        .ilabel-summary-item .standard {
+            color: #52c41a;
+            font-weight: 500;
+        }
+        .ilabel-calendar {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 6px;
+        }
+        .ilabel-day-cell {
+            border: 1px solid #e8e8e8;
+            border-radius: 4px;
+            padding: 6px 8px;
+            min-height: 60px;
+            font-size: 12px;
+        }
+        .ilabel-day-header {
+            font-weight: 600;
+            margin-bottom: 4px;
+            color: #333;
             font-size: 14px;
         }
-        .filter-row button {
-            background: #4f6ef7; color: #fff; border: none; cursor: pointer;
+        .ilabel-day-header .day-num {
+            font-size: 16px;
         }
-        .summary-cards {
-            display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+        .ilabel-day-standard-sum {
+            color: #52c41a;
+            font-weight: 500;
+            font-size: 13px;
         }
-        .card {
-            background: #f4f6fb; border-radius: 8px; padding: 12px 18px;
-            min-width: 140px;
+        .ilabel-task-row {
+            margin: 2px 0;
+            line-height: 1.5;
         }
-        .card .label { font-size: 13px; color: #555; }
-        .card .value { font-size: 20px; font-weight: 600; }
-        .calendar-grid {
-            display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
+        .ilabel-task-name {
+            color: #555;
+            font-size: 11px;
         }
-        .day-cell {
-            border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px;
-            min-height: 90px; font-size: 13px; background: #fafafa;
+        .ilabel-actual {
+            color: #1890ff;
+            font-weight: 500;
         }
-        .day-cell.weekend { background: #f0f0f0; }
-        .day-cell .date { font-weight: 600; margin-bottom: 4px; }
-        .day-cell .task-line { font-size: 12px; margin: 2px 0; display: flex; justify-content: space-between; }
-        .day-cell .total-line { font-weight: 600; border-top: 1px dashed #ccc; margin-top: 4px; padding-top: 2px; }
-        .empty-day { visibility: hidden; }
-        .week-header {
-            display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
-            margin-bottom: 6px; font-weight: 600; text-align: center; font-size: 14px;
+        .ilabel-standard {
+            color: #52c41a;
+            font-weight: 500;
         }
-    `;
-    document.head.appendChild(style);
+        .ilabel-loading {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+        .ilabel-weekday-header {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 6px;
+            margin-bottom: 6px;
+        }
+        .ilabel-weekday-item {
+            text-align: center;
+            font-size: 12px;
+            color: #999;
+            font-weight: 500;
+        }
+    `);
 
-    // ---------- 工具函数 ----------
-    function getStartOfMonth(year, month) {
-        return new Date(year, month, 1);
-    }
-    function getEndOfMonth(year, month) {
-        return new Date(year, month + 1, 0, 23, 59, 59, 999);
-    }
-    function formatDateStr(date) {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, '0');
-        const d = String(date.getDate()).padStart(2, '0');
-        return `${y}-${m}-${d}`;
-    }
+    // 注册菜单命令
+    GM_registerMenuCommand('查询窗口', openModal);
 
-    // 解析时间戳字符串
-    function parseTs(tsStr) {
-        const num = parseInt(tsStr, 10);
-        if (isNaN(num)) return null;
-        return new Date(num);
-    }
-
-    // 判断taskName属于哪种分类
-    function classifyTask(name) {
-        if (name.includes('1936')) return '1936';
-        if (name.includes('招募')) return '招募';
-        return 'ilabel';
-    }
-
-    // 计算标准条: (总量 / manageEffective) * 1000, 保留1位小数
-    function calcStandard(qty, effective) {
-        if (!effective || effective === 0) return 0;
-        return (qty / effective) * 1000;
-    }
-
-    // ---------- 数据获取 ----------
-    function fetchWorkData(startMs, endMs) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'POST',
-                url: 'https://ocean.cdposs.qq.com/api/trpc/WorkReportServiceProxy/ListWorkData',
-                headers: {
-                    'Content-Type': 'application/json; charset=UTF-8',
-                    'accept': 'application/json, text/plain, */*',
-                },
-                data: JSON.stringify({
-                    data: {
-                        startTime: startMs,
-                        endTime: endMs
-                    }
-                }),
-                onload: function(resp) {
-                    try {
-                        const json = JSON.parse(resp.responseText);
-                        if (json.code === 0 && json.data && json.data.records) {
-                            resolve(json.data.records);
-                        } else {
-                            reject(new Error(json.msg || '请求失败'));
-                        }
-                    } catch (e) {
-                        reject(e);
-                    }
-                },
-                onerror: reject
-            });
-        });
-    }
-
-    // ---------- 主面板 ----------
-    function createPanel() {
-        // 移除已有面板
-        const old = document.getElementById('workload-panel-overlay');
-        if (old) old.remove();
+    function openModal() {
+        // 移除已存在的弹窗
+        const existing = document.querySelector('.ilabel-modal-overlay');
+        if (existing) {
+            existing.remove();
+        }
 
         const overlay = document.createElement('div');
-        overlay.id = 'workload-panel-overlay';
+        overlay.className = 'ilabel-modal-overlay';
         overlay.innerHTML = `
-            <div id="workload-panel">
-                <div class="panel-header">
-                    <h2>工作数据看板</h2>
-                    <button class="panel-close">&times;</button>
+            <div class="ilabel-modal">
+                <div class="ilabel-modal-header">
+                    <h3>百灵提报数据</h3>
+                    <button class="ilabel-modal-close">&times;</button>
                 </div>
-                <div class="panel-body">
-                    <div class="filter-row">
-                        <label>月份</label>
-                        <input type="month" id="monthPicker" />
-                        <label>队列筛选</label>
-                        <select id="queueFilter">
-                            <option value="all">全部</option>
-                            <option value="1936">1936</option>
-                            <option value="招募">招募</option>
-                            <option value="ilabel">ilabel</option>
-                        </select>
-                        <button id="queryBtn">查询</button>
+                <div class="ilabel-modal-body">
+                    <div class="ilabel-controls">
+                        <select class="ilabel-month-select"></select>
+                        <div class="ilabel-filter-btns">
+                            <button class="ilabel-filter-btn active" data-filter="all">全部</button>
+                            <button class="ilabel-filter-btn" data-filter="1936">1936</button>
+                            <button class="ilabel-filter-btn" data-filter="招募">招募</button>
+                            <button class="ilabel-filter-btn" data-filter="ilabel">ilabel</button>
+                        </div>
+                        <div class="ilabel-legend">
+                            <span><span class="ilabel-legend-dot blue"></span>实际条</span>
+                            <span><span class="ilabel-legend-dot green"></span>标准条</span>
+                        </div>
                     </div>
-                    <div id="summaryArea" class="summary-cards"></div>
-                    <div id="calendarArea"></div>
+                    <div class="ilabel-summary"></div>
+                    <div class="ilabel-weekday-header">
+                        <div class="ilabel-weekday-item">日</div>
+                        <div class="ilabel-weekday-item">一</div>
+                        <div class="ilabel-weekday-item">二</div>
+                        <div class="ilabel-weekday-item">三</div>
+                        <div class="ilabel-weekday-item">四</div>
+                        <div class="ilabel-weekday-item">五</div>
+                        <div class="ilabel-weekday-item">六</div>
+                    </div>
+                    <div class="ilabel-calendar"></div>
                 </div>
             </div>
         `;
+
         document.body.appendChild(overlay);
 
-        // 关闭按钮
-        overlay.querySelector('.panel-close').onclick = () => overlay.remove();
+        const monthSelect = overlay.querySelector('.ilabel-month-select');
+        const filterBtns = overlay.querySelectorAll('.ilabel-filter-btn');
+        const summaryDiv = overlay.querySelector('.ilabel-summary');
+        const calendarDiv = overlay.querySelector('.ilabel-calendar');
+        const closeBtn = overlay.querySelector('.ilabel-modal-close');
+
+        let allData = [];
+        let currentFilter = 'all';
+
+        // 初始化月份选择器
+        const now = dayjs();
+        for (let i = 0; i < 12; i++) {
+            const month = now.subtract(i, 'month');
+            const option = document.createElement('option');
+            option.value = month.format('YYYY-MM');
+            option.textContent = month.format('YYYY年MM月');
+            if (i === 0) option.selected = true;
+            monthSelect.appendChild(option);
+        }
+
+        // 关闭弹窗
+        closeBtn.onclick = () => overlay.remove();
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) overlay.remove();
         });
 
-        // 默认月份设为当前月
-        const now = new Date();
-        const monthInput = overlay.querySelector('#monthPicker');
-        monthInput.value = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-
-        // 查询逻辑
-        const doQuery = async () => {
-            const monthVal = monthInput.value; // "YYYY-MM"
-            if (!monthVal) return;
-            const [y, m] = monthVal.split('-').map(Number);
-            const start = getStartOfMonth(y, m-1);
-            const end = getEndOfMonth(y, m-1);
-            const filterVal = overlay.querySelector('#queueFilter').value;
-
-            try {
-                const records = await fetchWorkData(start.getTime(), end.getTime());
-                renderData(records, y, m-1, filterVal, overlay);
-            } catch (err) {
-                alert('获取数据失败: ' + err.message);
-            }
-        };
-
-        overlay.querySelector('#queryBtn').onclick = doQuery;
-        // 点击查询时自动触发一次
-        doQuery();
-    }
-
-    function renderData(records, year, month, filter, panel) {
-        const summaryDiv = panel.querySelector('#summaryArea');
-        const calDiv = panel.querySelector('#calendarArea');
-
-        // 按 reportDate 整理数据 (reportDate 是毫秒时间戳字符串)
-        // 同时收集所有detail用于统计
-        const dayMap = new Map(); // key: "YYYY-MM-DD" -> { details: [] }
-
-        records.forEach(rec => {
-            const dateObj = parseTs(rec.reportDate);
-            if (!dateObj) return;
-            const dateKey = formatDateStr(dateObj);
-            if (!dayMap.has(dateKey)) {
-                dayMap.set(dateKey, []);
-            }
-            // 将details全部放入
-            if (rec.details && Array.isArray(rec.details)) {
-                dayMap.get(dateKey).push(...rec.details);
-            }
+        // 筛选按钮事件
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                renderData();
+            });
         });
 
-        // 筛选队列后过滤details
-        if (filter !== 'all') {
-            for (let [dateKey, details] of dayMap.entries()) {
-                const filtered = details.filter(d => classifyTask(d.taskName) === filter);
-                dayMap.set(dateKey, filtered);
+        // 月份选择事件
+        monthSelect.addEventListener('change', () => {
+            fetchData(monthSelect.value);
+        });
+
+        // 初始加载数据
+        fetchData(monthSelect.value);
+
+        async function fetchData(monthStr) {
+            calendarDiv.innerHTML = '<div class="ilabel-loading">加载中...</div>';
+            summaryDiv.innerHTML = '';
+
+            const [year, month] = monthStr.split('-');
+            const startTime = dayjs(`${year}-${month}-01`).startOf('month').valueOf();
+            const endTime = dayjs(`${year}-${month}-01`).endOf('month').valueOf();
+
+            try {
+                const response = await fetch('https://ocean.cdposs.qq.com/api/trpc/WorkReportServiceProxy/ListWorkData', {
+                    method: 'POST',
+                    headers: {
+                        'accept': 'application/json, text/plain, */*',
+                        'content-type': 'application/json; charset=UTF-8',
+                        'x-requested-with': 'XMLHttpRequest',
+                        'x-tc-language': 'zh-CN',
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({
+                        data: {
+                            startTime: startTime,
+                            endTime: endTime
+                        }
+                    })
+                });
+
+                const result = await response.json();
+                if (result.code === 0 && result.data && result.data.records) {
+                    allData = result.data.records;
+                    renderData();
+                } else {
+                    calendarDiv.innerHTML = '<div class="ilabel-loading">暂无数据</div>';
+                }
+            } catch (error) {
+                calendarDiv.innerHTML = '<div class="ilabel-loading">请求失败: ' + error.message + '</div>';
             }
         }
 
-        // ---------- 整月数据统计 ----------
-        let total1936Qty = 0, total1936Std = 0;
-        let totalRecruitQty = 0, totalRecruitStd = 0;
-        let totalIlabelQty = 0, totalIlabelStd = 0;
-
-        for (let details of dayMap.values()) {
-            details.forEach(d => {
-                const qty = (d.ilabelAuditQuantity || 0) + (d.kaipingAuditQuantity || 0);
-                const effective = d.manageEffective || 160; // 默认160防止除零，但实际都有值
-                const std = calcStandard(qty, effective);
-                const cat = classifyTask(d.taskName);
-                if (cat === '1936') {
-                    total1936Qty += qty;
-                    total1936Std += std;
-                } else if (cat === '招募') {
-                    totalRecruitQty += qty;
-                    totalRecruitStd += std;
-                } else {
-                    totalIlabelQty += qty;
-                    totalIlabelStd += std;
-                }
-            });
+        function renderData() {
+            const filteredData = filterData(allData, currentFilter);
+            renderSummary(filteredData);
+            renderCalendar(filteredData);
         }
 
-        const totalAllStd = total1936Std + totalRecruitStd + totalIlabelStd;
+        function filterData(records, filter) {
+            if (filter === 'all') return records;
 
-        summaryDiv.innerHTML = `
-            <div class="card"><div class="label">1936 实际条</div><div class="value">${total1936Qty} <small>(${total1936Std.toFixed(1)}标准)</small></div></div>
-            <div class="card"><div class="label">招募 实际条</div><div class="value">${totalRecruitQty} <small>(${totalRecruitStd.toFixed(1)}标准)</small></div></div>
-            <div class="card"><div class="label">ilabel 实际条</div><div class="value">${totalIlabelQty} <small>(${totalIlabelStd.toFixed(1)}标准)</small></div></div>
-            <div class="card"><div class="label">全部标准条</div><div class="value">${totalAllStd.toFixed(1)}</div></div>
-        `;
-
-        // ---------- 日历渲染 ----------
-        const daysInMonth = new Date(year, month+1, 0).getDate();
-        const firstDay = new Date(year, month, 1).getDay(); // 0=周日
-
-        let calHtml = '<div class="week-header">';
-        ['日','一','二','三','四','五','六'].forEach(d => calHtml += `<div>${d}</div>`);
-        calHtml += '</div><div class="calendar-grid">';
-
-        // 填充空白
-        for (let i = 0; i < firstDay; i++) {
-            calHtml += '<div class="day-cell empty-day"></div>';
+            return records.map(record => {
+                const filteredDetails = record.details.filter(detail => {
+                    const category = getTaskCategory(detail.taskName);
+                    return category === filter;
+                });
+                if (filteredDetails.length === 0) return null;
+                return { ...record, details: filteredDetails };
+            }).filter(r => r !== null);
         }
 
-        for (let d = 1; d <= daysInMonth; d++) {
-            const date = new Date(year, month, d);
-            const dateKey = formatDateStr(date);
-            const dayOfWeek = date.getDay();
-            const isWeekend = (dayOfWeek === 0 || dayOfWeek === 6);
-            const details = dayMap.get(dateKey) || [];
+        function getTaskCategory(taskName) {
+            if (taskName.includes('1936-珠宝开平直播审核（聚合）-仙桃')) return '1936';
+            if (taskName === '招募队列') return '招募';
+            return 'ilabel';
+        }
 
-            // 当天分类统计
-            let day1936Qty = 0, day1936Std = 0;
-            let dayRecQty = 0, dayRecStd = 0;
-            let dayIlaQty = 0, dayIlaStd = 0;
+        function calcStandard(detail) {
+            const actual = (detail.ilabelAuditQuantity || 0) + (detail.kaipingAuditQuantity || 0);
+            const effective = detail.manageEffective || 1;
+            return Math.round((actual / effective) * 1000 * 100) / 100;
+        }
 
-            details.forEach(detail => {
-                const qty = (detail.ilabelAuditQuantity || 0) + (detail.kaipingAuditQuantity || 0);
-                const eff = detail.manageEffective || 160;
-                const std = calcStandard(qty, eff);
-                const cat = classifyTask(detail.taskName);
-                if (cat === '1936') {
-                    day1936Qty += qty;
-                    day1936Std += std;
-                } else if (cat === '招募') {
-                    dayRecQty += qty;
-                    dayRecStd += std;
-                } else {
-                    dayIlaQty += qty;
-                    dayIlaStd += std;
-                }
+        function calcActual(detail) {
+            return (detail.ilabelAuditQuantity || 0) + (detail.kaipingAuditQuantity || 0);
+        }
+
+        function renderSummary(records) {
+            const categories = { '1936': { actual: 0, standard: 0 }, '招募': { actual: 0, standard: 0 }, 'ilabel': { actual: 0, standard: 0 } };
+            let totalStandard = 0;
+
+            records.forEach(record => {
+                record.details.forEach(detail => {
+                    const category = getTaskCategory(detail.taskName);
+                    const actual = calcActual(detail);
+                    const standard = calcStandard(detail);
+                    categories[category].actual += actual;
+                    categories[category].standard += standard;
+                    totalStandard += standard;
+                });
             });
 
-            const dayTotalStd = day1936Std + dayRecStd + dayIlaStd;
+            summaryDiv.innerHTML = `
+                <div class="ilabel-summary-item">
+                    当月标准条：<span class="standard">${totalStandard.toFixed(2)}</span>
+                </div>
+                <div class="ilabel-summary-item">
+                    1936：<span class="actual">${categories['1936'].actual}</span> / <span class="standard">${categories['1936'].standard.toFixed(2)}</span>
+                </div>
+                <div class="ilabel-summary-item">
+                    招募：<span class="actual">${categories['招募'].actual}</span> / <span class="standard">${categories['招募'].standard.toFixed(2)}</span>
+                </div>
+                <div class="ilabel-summary-item">
+                    ilabel：<span class="actual">${categories['ilabel'].actual}</span> / <span class="standard">${categories['ilabel'].standard.toFixed(2)}</span>
+                </div>
+            `;
+        }
 
-            calHtml += `<div class="day-cell${isWeekend ? ' weekend' : ''}">`;
-            calHtml += `<div class="date">${d}</div>`;
-            if (details.length > 0) {
-                calHtml += `<div class="total-line task-line"><span>总计标准</span><span>${dayTotalStd.toFixed(1)}</span></div>`;
-                if (filter === 'all' || filter === '1936') {
-                    calHtml += `<div class="task-line"><span>1936</span><span>${day1936Qty} (${day1936Std.toFixed(1)})</span></div>`;
+        function renderCalendar(records) {
+            // 按日期分组
+            const dateMap = {};
+            records.forEach(record => {
+                const date = dayjs(Number(record.reportDate)).format('YYYY-MM-DD');
+                if (!dateMap[date]) {
+                    dateMap[date] = { details: [] };
                 }
-                if (filter === 'all' || filter === '招募') {
-                    calHtml += `<div class="task-line"><span>招募</span><span>${dayRecQty} (${dayRecStd.toFixed(1)})</span></div>`;
-                }
-                if (filter === 'all' || filter === 'ilabel') {
-                    calHtml += `<div class="task-line"><span>ilabel</span><span>${dayIlaQty} (${dayIlaStd.toFixed(1)})</span></div>`;
-                }
+                dateMap[date].details.push(...record.details);
+            });
+
+            const monthSelect = overlay.querySelector('.ilabel-month-select');
+            const [year, month] = monthSelect.value.split('-');
+            const firstDay = dayjs(`${year}-${month}-01`);
+            const daysInMonth = firstDay.daysInMonth();
+            const startDayOfWeek = firstDay.day(); // 0=周日
+
+            let html = '';
+
+            // 填充空白
+            for (let i = 0; i < startDayOfWeek; i++) {
+                html += '<div class="ilabel-day-cell" style="background:#f9f9f9;"></div>';
             }
-            calHtml += '</div>';
-        }
 
-        calHtml += '</div>';
-        calDiv.innerHTML = calHtml;
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = dayjs(`${year}-${month}-${String(day).padStart(2, '0')}`).format('YYYY-MM-DD');
+                const dayData = dateMap[dateStr];
+
+                let cellContent = `<div class="ilabel-day-header"><span class="day-num">${day}</span></div>`;
+
+                if (dayData) {
+                    const categories = { '1936': [], '招募': [], 'ilabel': [] };
+
+                    dayData.details.forEach(detail => {
+                        const category = getTaskCategory(detail.taskName);
+                        categories[category].push(detail);
+                    });
+
+                    // 计算标准条之和
+                    let dayStandardSum = 0;
+                    Object.values(categories).forEach(details => {
+                        details.forEach(d => {
+                            dayStandardSum += calcStandard(d);
+                        });
+                    });
+
+                    if (dayStandardSum > 0) {
+                        cellContent += ` <span class="ilabel-day-standard-sum">${dayStandardSum.toFixed(2)}</span>`;
+                    }
+
+                    // 渲染各队列数据
+                    ['1936', '招募', 'ilabel'].forEach(cat => {
+                        if (categories[cat].length > 0) {
+                            let catActual = 0;
+                            let catStandard = 0;
+                            categories[cat].forEach(d => {
+                                catActual += calcActual(d);
+                                catStandard += calcStandard(d);
+                            });
+                            if (catActual > 0 || catStandard > 0) {
+                                cellContent += `<div class="ilabel-task-row">
+                                    <span class="ilabel-task-name">${cat}:</span>
+                                    <span class="ilabel-actual">${catActual}</span> /
+                                    <span class="ilabel-standard">${catStandard.toFixed(2)}</span>
+                                </div>`;
+                            }
+                        }
+                    });
+                }
+
+                html += `<div class="ilabel-day-cell">${cellContent}</div>`;
+            }
+
+            calendarDiv.innerHTML = html;
+        }
     }
-
-    // 注册菜单命令
-    GM_registerMenuCommand('打开查询', createPanel);
 })();
