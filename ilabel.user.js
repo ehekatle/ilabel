@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.5.0
+// @version      3.5.1
 // @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证、提交时限、数据面板）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
@@ -439,6 +439,8 @@
     };
 
     const isEx = d => {
+        // 新增：粉丝数大于10万视为豁免
+        if (d.fansCount > 100000) return true;
         const wl = S.cfg?.anchorWhiteList || {};
         return (d.anchorUserId && wl.anchorUserIdWhiteList?.includes(d.anchorUserId)) ||
             (d.nickname && wl.nicknameWhiteList?.some(k => k && d.nickname.includes(k))) ||
@@ -480,7 +482,8 @@
                 liveId: info.liveId || '', anchorUserId: info.anchorUserId || '', nickname: info.nickname || '',
                 authStatus: info.authStatus || '', description: info.description || '', poiName: info.poiName || '',
                 streamStartTime: info.streamStartTime || '', auditTime: auditInfo.audit_time || 0, auditor,
-                auditRemark: auditInfo.auditRemark || ''
+                auditRemark: auditInfo.auditRemark || '',
+                fansCount: info.fansCount || 0   // 新增粉丝数字段
             };
             if (S.ok) {
                 S.types = checkTypes(S.live);
