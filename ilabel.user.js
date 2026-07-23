@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         iLabel直播审核辅助
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      3.5.1
+// @version      3.5.2
 // @description  直播审核辅助工具（含预埋、豁免、违规检测、推送提醒、队列查询、审核验证、提交时限、数据面板）
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
@@ -422,7 +422,7 @@
         const ts = []; if (!S.cfg) return ts;
         isPre(d) && ts.push('prefilled');
         isEx(d) && ts.push('exempted');
-        d.auditRemark?.includes('复核') && ts.push('review');
+        d.auditRemark?.match(/复核|玉石类目错放/) && ts.push('review');
         d.auditRemark?.includes('辛苦注意审核') && ts.push('targeted');
         penalty(d).found && ts.push('penalty');
         d.auditRemark?.includes('辛苦核实') && ts.push('note');
