@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         百灵数据查询
 // @namespace    https://github.com/ehekatle/ilabel
-// @version      1.0
+// @version      1.1
 // @description  按月份和队列查看工作数据，自动换算标准条
 // @author       ehekatle
 // @homepage     https://github.com/ehekatle/ilabel
@@ -241,9 +241,10 @@
                             <button class="ilabel-filter-btn" data-filter="1936">1936</button>
                             <button class="ilabel-filter-btn" data-filter="招募">招募</button>
                             <button class="ilabel-filter-btn" data-filter="ilabel">ilabel</button>
+                            <button class="ilabel-filter-btn" data-filter="非任务">非任务</button>
                         </div>
                         <div class="ilabel-legend">
-                            <span><span class="ilabel-legend-dot blue"></span>实际条</span>
+                            <span><span class="ilabel-legend-dot blue"></span>实际条/小时</span>
                             <span><span class="ilabel-legend-dot green"></span>标准条</span>
                         </div>
                     </div>
@@ -271,6 +272,7 @@
         const closeBtn = overlay.querySelector('.ilabel-modal-close');
 
         let allData = [];
+        let nonTaskData = {}; // { 'YYYY-MM-DD': { hours: number, standard: number } }
         let currentFilter = 'all';
 
         // 初始化月份选择器
@@ -308,6 +310,24 @@
         // 初始加载数据
         fetchData(monthSelect.value);
 
+        // 并发请求工具（限制并发数）
+        async function concurrentMap(items, limit, asyncFn) {
+            const results = [];
+            const executing = [];
+            for (const item of items) {
+                const p = Promise.resolve().then(() => asyncFn(item));
+                results.push(p);
+                if (limit <= items.length) {
+                    const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+                    executing.push(e);
+                    if (executing.length >= limit) {
+                        await Promise.race(executing);
+                    }
+                }
+            }
+            return Promise.all(results);
+        }
+
         async function fetchData(monthStr) {
             calendarDiv.innerHTML = '<div class="ilabel-loading">加载中...</div>';
             summaryDiv.innerHTML = '';
@@ -317,7 +337,8 @@
             const endTime = dayjs(`${year}-${month}-01`).endOf('month').valueOf();
 
             try {
-                const response = await fetch('https://ocean.cdposs.qq.com/api/trpc/WorkReportServiceProxy/ListWorkData', {
+                // 并行请求工作数据和非任务数据
+                const workPromise = fetch('https://ocean.cdposs.qq.com/api/trpc/WorkReportServiceProxy/ListWorkData', {
                     method: 'POST',
                     headers: {
                         'accept': 'application/json, text/plain, */*',
@@ -332,14 +353,97 @@
                             endTime: endTime
                         }
                     })
+                }).then(res => res.json());
+
+                // 获取该月所有日期的时间戳
+                const daysInMonth = dayjs(`${year}-${month}-01`).daysInMonth();
+                const dateTimestamps = [];
+                for (let d = 1; d <= daysInMonth; d++) {
+                    const date = dayjs(`${year}-${month}-${String(d).padStart(2, '0')}`).startOf('day');
+                    dateTimestamps.push(date.valueOf());
+                }
+
+                // 并发请求非任务数据（限6线程）
+                const nonTaskPromise = concurrentMap(dateTimestamps, 6, async (dateTs) => {
+                    try {
+                        const resp = await fetch('https://ocean.cdposs.qq.com/api/trpc/WorkingHoursProxy/QueryWorkingHoursManage', {
+                            method: 'POST',
+                            headers: {
+                                'accept': 'application/json, text/plain, */*',
+                                'content-type': 'application/json; charset=UTF-8',
+                                'x-requested-with': 'XMLHttpRequest',
+                                'x-tc-language': 'zh-CN',
+                            },
+                            credentials: 'include',
+                            body: JSON.stringify({
+                                data: {
+                                    date: dateTs,
+                                    confirmStatus: 3,
+                                    pageNumber: 1,
+                                    pageSize: 10
+                                }
+                            })
+                        });
+                        const data = await resp.json();
+                        const dateStr = dayjs(dateTs).format('YYYY-MM-DD');
+                        let hours = 0;
+                        let standard = 0;
+
+                        if (data.code === 0 && data.data && data.data.workers && data.data.workers.length > 0) {
+                            const worker = data.data.workers[0];
+                            if (worker.shifts && worker.shifts.length > 0) {
+                                const shiftStart = Number(worker.shifts[0].startTime);
+                                const shiftEnd = Number(worker.shifts[0].endTime);
+                                if (shiftEnd > shiftStart) {
+                                    let totalMs = 0;
+                                    const directionSegments = worker.managerModify && worker.managerModify.directionSegments || [];
+                                    for (const seg of directionSegments) {
+                                        // action 不为 48 且不为 10001 的为非任务时间
+                                        if (seg.action !== 48 && seg.action !== 10001) {
+                                            for (const sub of (seg.segments || [])) {
+                                                const segStart = Number(sub.startTime);
+                                                const segEnd = Number(sub.endTime);
+                                                const interStart = Math.max(segStart, shiftStart);
+                                                const interEnd = Math.min(segEnd, shiftEnd);
+                                                if (interEnd > interStart) {
+                                                    totalMs += (interEnd - interStart);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    hours = totalMs / 3600000;
+                                    standard = (totalMs / 28800000) * 1000; // 8小时=1000标准条
+                                }
+                            }
+                        }
+                        return { dateStr, hours: Math.round(hours * 10000) / 10000, standard: Math.round(standard * 100) / 100 };
+                    } catch (e) {
+                        console.error('非任务查询失败:', e);
+                        return { dateStr: dayjs(dateTs).format('YYYY-MM-DD'), hours: 0, standard: 0 };
+                    }
                 });
 
-                const result = await response.json();
-                if (result.code === 0 && result.data && result.data.records) {
-                    allData = result.data.records;
-                    renderData();
+                const [workResult, nonTaskResults] = await Promise.all([workPromise, nonTaskPromise]);
+
+                // 处理工作数据
+                if (workResult.code === 0 && workResult.data && workResult.data.records) {
+                    allData = workResult.data.records;
                 } else {
+                    allData = [];
+                }
+
+                // 处理非任务数据
+                nonTaskData = {};
+                nonTaskResults.forEach(item => {
+                    if (item && item.hours > 0) {
+                        nonTaskData[item.dateStr] = { hours: item.hours, standard: item.standard };
+                    }
+                });
+
+                if (allData.length === 0 && Object.keys(nonTaskData).length === 0) {
                     calendarDiv.innerHTML = '<div class="ilabel-loading">暂无数据</div>';
+                } else {
+                    renderData();
                 }
             } catch (error) {
                 calendarDiv.innerHTML = '<div class="ilabel-loading">请求失败: ' + error.message + '</div>';
@@ -353,6 +457,8 @@
         }
 
         function filterData(records, filter) {
+            // 非任务数据不在 records 中，单独处理
+            if (filter === '非任务') return []; // 只显示非任务，工作数据置空
             if (filter === 'all') return records;
 
             return records.map(record => {
@@ -366,23 +472,26 @@
         }
 
         function getTaskCategory(taskName) {
+            if (taskName === '非任务') return '非任务';
             if (taskName.includes('1936-珠宝开平直播审核（聚合）-仙桃')) return '1936';
             if (taskName === '招募队列') return '招募';
             return 'ilabel';
         }
 
         function calcStandard(detail) {
+            if (detail.taskName === '非任务') return detail.nonTaskStandard || 0;
             const actual = (detail.ilabelAuditQuantity || 0) + (detail.kaipingAuditQuantity || 0);
             const effective = detail.manageEffective || 1;
             return Math.round((actual / effective) * 1000 * 100) / 100;
         }
 
         function calcActual(detail) {
+            if (detail.taskName === '非任务') return 0; // 非任务无实际条数
             return (detail.ilabelAuditQuantity || 0) + (detail.kaipingAuditQuantity || 0);
         }
 
         function renderSummary(records) {
-            const categories = { '1936': { actual: 0, standard: 0 }, '招募': { actual: 0, standard: 0 }, 'ilabel': { actual: 0, standard: 0 } };
+            const categories = { '1936': { actual: 0, standard: 0 }, '招募': { actual: 0, standard: 0 }, 'ilabel': { actual: 0, standard: 0 }, '非任务': { hours: 0, standard: 0 } };
             let totalStandard = 0;
 
             records.forEach(record => {
@@ -390,11 +499,26 @@
                     const category = getTaskCategory(detail.taskName);
                     const actual = calcActual(detail);
                     const standard = calcStandard(detail);
-                    categories[category].actual += actual;
+                    if (category === '非任务') {
+                        categories['非任务'].hours += detail.nonTaskHours || 0;
+                    } else {
+                        categories[category].actual += actual;
+                    }
                     categories[category].standard += standard;
                     totalStandard += standard;
                 });
             });
+
+            // 加入非任务数据（即使筛选不是全部或非任务，汇总也显示全部？统一显示当月所有非任务）
+            let totalNonTaskHours = 0, totalNonTaskStandard = 0;
+            for (const dateStr in nonTaskData) {
+                const nt = nonTaskData[dateStr];
+                totalNonTaskHours += nt.hours;
+                totalNonTaskStandard += nt.standard;
+            }
+            categories['非任务'].hours = totalNonTaskHours;
+            categories['非任务'].standard = totalNonTaskStandard;
+            totalStandard += totalNonTaskStandard;
 
             summaryDiv.innerHTML = `
                 <div class="ilabel-summary-item">
@@ -409,11 +533,14 @@
                 <div class="ilabel-summary-item">
                     ilabel：<span class="actual">${categories['ilabel'].actual}</span> / <span class="standard">${categories['ilabel'].standard.toFixed(2)}</span>
                 </div>
+                <div class="ilabel-summary-item">
+                    非任务：<span class="actual">${categories['非任务'].hours.toFixed(4)}h</span> / <span class="standard">${categories['非任务'].standard.toFixed(2)}</span>
+                </div>
             `;
         }
 
         function renderCalendar(records) {
-            // 按日期分组
+            // 按日期分组工作数据
             const dateMap = {};
             records.forEach(record => {
                 const date = dayjs(Number(record.reportDate)).format('YYYY-MM-DD');
@@ -439,48 +566,78 @@
             for (let day = 1; day <= daysInMonth; day++) {
                 const dateStr = dayjs(`${year}-${month}-${String(day).padStart(2, '0')}`).format('YYYY-MM-DD');
                 const dayData = dateMap[dateStr];
+                const nonTaskToday = nonTaskData[dateStr];
 
                 let cellContent = `<div class="ilabel-day-header"><span class="day-num">${day}</span></div>`;
 
-                if (dayData) {
-                    const categories = { '1936': [], '招募': [], 'ilabel': [] };
+                const categories = { '1936': [], '招募': [], 'ilabel': [], '非任务': [] };
 
+                if (dayData) {
                     dayData.details.forEach(detail => {
                         const category = getTaskCategory(detail.taskName);
-                        categories[category].push(detail);
-                    });
-
-                    // 计算标准条之和
-                    let dayStandardSum = 0;
-                    Object.values(categories).forEach(details => {
-                        details.forEach(d => {
-                            dayStandardSum += calcStandard(d);
-                        });
-                    });
-
-                    if (dayStandardSum > 0) {
-                        cellContent += ` <span class="ilabel-day-standard-sum">${dayStandardSum.toFixed(2)}</span>`;
-                    }
-
-                    // 渲染各队列数据
-                    ['1936', '招募', 'ilabel'].forEach(cat => {
-                        if (categories[cat].length > 0) {
-                            let catActual = 0;
-                            let catStandard = 0;
-                            categories[cat].forEach(d => {
-                                catActual += calcActual(d);
-                                catStandard += calcStandard(d);
-                            });
-                            if (catActual > 0 || catStandard > 0) {
-                                cellContent += `<div class="ilabel-task-row">
-                                    <span class="ilabel-task-name">${cat}:</span>
-                                    <span class="ilabel-actual">${catActual}</span> /
-                                    <span class="ilabel-standard">${catStandard.toFixed(2)}</span>
-                                </div>`;
-                            }
+                        if (category !== '非任务') {
+                            categories[category].push(detail);
                         }
                     });
                 }
+
+                // 添加非任务数据
+                if (nonTaskToday && nonTaskToday.hours > 0) {
+                    categories['非任务'].push({
+                        taskName: '非任务',
+                        nonTaskHours: nonTaskToday.hours,
+                        nonTaskStandard: nonTaskToday.standard
+                    });
+                }
+
+                // 计算标准条之和（全部类别）
+                let dayStandardSum = 0;
+                Object.keys(categories).forEach(cat => {
+                    if (cat === '非任务') {
+                        dayStandardSum += categories[cat].reduce((sum, d) => sum + (d.nonTaskStandard || 0), 0);
+                    } else {
+                        dayStandardSum += categories[cat].reduce((sum, d) => sum + calcStandard(d), 0);
+                    }
+                });
+
+                if (dayStandardSum > 0) {
+                    cellContent += ` <span class="ilabel-day-standard-sum">${dayStandardSum.toFixed(2)}</span>`;
+                }
+
+                // 根据当前筛选决定显示哪些类别
+                const displayCategories = [];
+                if (currentFilter === 'all') {
+                    displayCategories.push('1936', '招募', 'ilabel', '非任务');
+                } else {
+                    displayCategories.push(currentFilter);
+                }
+
+                displayCategories.forEach(cat => {
+                    const items = categories[cat];
+                    if (!items || items.length === 0) return;
+
+                    if (cat === '非任务') {
+                        const nt = items[0]; // 每天只有一个汇总条目
+                        cellContent += `<div class="ilabel-task-row">
+                            <span class="ilabel-task-name">非任务:</span>
+                            <span class="ilabel-actual">${nt.nonTaskHours.toFixed(4)}h</span> /
+                            <span class="ilabel-standard">${nt.nonTaskStandard.toFixed(2)}</span>
+                        </div>`;
+                    } else {
+                        let catActual = 0, catStandard = 0;
+                        items.forEach(d => {
+                            catActual += calcActual(d);
+                            catStandard += calcStandard(d);
+                        });
+                        if (catActual > 0 || catStandard > 0) {
+                            cellContent += `<div class="ilabel-task-row">
+                                <span class="ilabel-task-name">${cat}:</span>
+                                <span class="ilabel-actual">${catActual}</span> /
+                                <span class="ilabel-standard">${catStandard.toFixed(2)}</span>
+                            </div>`;
+                        }
+                    }
+                });
 
                 html += `<div class="ilabel-day-cell">${cellContent}</div>`;
             }
