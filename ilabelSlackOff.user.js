@@ -17,7 +17,7 @@
     'use strict';
 
     /* ===================== 配置 ===================== */
-    const SEND_KEY         = 'SCT413564T95253rl2Zq82zqRKmi3d6yEn';
+    const SEND_KEY         = '';
     const MIN_DELAY_MS     = 60 * 1000;
     const RANDOM_DELAY_MS  = 10 * 1000;
     const PUSH_INTERVAL_MS = 60 * 1000;
