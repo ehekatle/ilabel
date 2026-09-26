@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         iLabel自动摸鱼机
 // @namespace    https://ilabel.weixin.qq.com/
-// @version      1.5
+// @version      1.6
 // @description  自动摸鱼机
 // @author       ehekatle
 // @match        https://ilabel.weixin.qq.com/mixed-task/10/label*
