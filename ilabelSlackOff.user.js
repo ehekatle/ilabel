@@ -428,7 +428,6 @@
         const liveId = getPageLiveId();
         if (!liveId) return;
 
-        // 只要 LiveId 变化，立即刷新状态和指示器
         if (liveId !== currentLiveId) {
             resetForNewLiveId(liveId);
         }
@@ -437,23 +436,30 @@
         if (!queueText) return;
 
         if (submitted || historyItems === null) return;
-        if (submitDeadline) return;
 
-        const isFallback = queueText === '兜底';
-        const hasYunque  = hasYunqueOperator(liveId);
+        // 非兜底，或同 LiveId 历史操作人含“云雀”：一律只做提醒
+        const needAlert = queueText !== '兜底' || hasYunqueOperator(liveId);
 
-        // 非兜底：告警
-        // 兜底但同 ID 历史操作人包含“云雀”：也告警，与非兜底完全一致
-        if (!isFallback || hasYunque) {
+        if (needAlert) {
+            // 如果此前已经安排了自动提交，立即取消
+            if (submitDeadline) {
+                submitDeadline = 0;
+                tightLoopActive = false;
+            }
+
             if (!confirmedLiveIds.has(liveId) && !alertActive) {
                 activateAlert();
+            } else {
+                updateIndicator();
             }
             return;
         }
 
+        // 只有“兜底且无云雀”才允许自动提交
+        if (submitDeadline) return;
+
         if (!selectNoViolation()) return;
 
-        // 关键：延迟从检测到 LiveId 变化的那一刻开始计算
         const delay = MIN_DELAY_MS + Math.random() * RANDOM_DELAY_MS;
         const base  = liveIdChangedAt || performance.now();
 
@@ -467,7 +473,6 @@
 
         console.log(`[自动] 已选中「无违规」，${remainSec}s 后提交`);
 
-        // 临近 3 秒时才会真正进入密集检查
         startTightLoop();
     }
 
